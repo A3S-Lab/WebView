@@ -1,8 +1,8 @@
 //! `a3s-webview` — a tiny native WebView window helper for the a3s code TUI.
 //!
 //! The TUI is a terminal app and can't embed a WebView in its text grid, so when
-//! 书安OS's progressive API returns a `viewUrl` that is a *partial* page meant for
-//! a sized popup (not a full browser tab), the TUI spawns this helper:
+//! 书安OS's progressive API returns a `view` object (url + size) that is a
+//! *partial* page meant for a sized popup (not a full browser tab), it spawns this:
 //!
 //! ```text
 //! a3s-webview --url https://os.example.com/embed/x --width 720 --height 520 --title "..."
@@ -12,12 +12,15 @@
 //! until the window is closed.
 //!
 //! ## Auth
-//! The 书安OS web app authenticates from a token in `localStorage` (`access_token`
-//! / `auth_token`; see apps/web `auth-headers.ts`), not a cookie — so a freshly
-//! opened WebView would land on the login page. Before navigation we seed those
-//! keys via a wry initialization script, reading the token from the
-//! `A3S_OS_TOKEN` env var the TUI already exports (so it never appears in argv /
-//! `ps`). Override the env name with `--token-env`, disable with `--no-auth`.
+//! The 书安OS web app authenticates from `localStorage`, not a cookie — so a
+//! freshly opened WebView would land on the login page. Its `restoreAuth` (see
+//! apps/web `models/auth.model.ts`) requires `auth_token`/`access_token`, an
+//! optional `refresh_token`, AND an `auth_user` object — a token alone is not
+//! enough. Before navigation a wry initialization script seeds the tokens from
+//! the `A3S_OS_TOKEN` / `A3S_OS_REFRESH_TOKEN` env vars the TUI exports (so they
+//! never appear in argv / `ps`), then resolves the current user with a
+//! same-origin `GET /api/v1/users/me` and seeds `auth_user` too. Override the token
+//! env name with `--token-env`, disable all of it with `--no-auth`.
 //! `--header 'Name: Value'` (repeatable) still attaches raw request headers.
 
 use tao::{
@@ -48,7 +51,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
     let mut url: Option<String> = None;
     let mut width = 900.0_f64;
     let mut height = 680.0_f64;
-    let mut title = String::from("a3s · OS");
+    let mut title = String::from("渐进式UI");
     let mut headers = HeaderMap::new();
     let mut token_env = String::from("A3S_OS_TOKEN");
     let mut no_auth = false;
@@ -104,17 +107,53 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
     })
 }
 
-/// JS run at document-start (before the page's own scripts) that seeds the OS
-/// session token into localStorage so the SPA loads authenticated. `token` is
-/// escaped into a JS string literal. Returns `None` for an empty token.
-fn auth_init_script(token: &str) -> Option<String> {
+/// A string escaped into a single-quoted JS string literal (incl. the quotes).
+fn js_str(s: &str) -> String {
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
+/// JS run at document-start (before the page's own scripts) that injects the full
+/// 书安OS session into `localStorage` so the SPA's `restoreAuth` loads
+/// authenticated. That needs THREE things, not just the token: `auth_token` /
+/// `access_token`, an optional `refresh_token`, and an `auth_user` object (a user
+/// with an `id`) — without `auth_user` the SPA clears auth and shows the login
+/// page. We seed the tokens from the inherited env, then resolve the current user
+/// with a same-origin `GET /api/v1/users/me` (Bearer = the token) and store it too.
+/// The fetch is synchronous on purpose: it must finish before the page's own
+/// scripts run, so a deferred fetch would race `restoreAuth`.
+///
+/// Returns `None` for an empty token. `token` is the access token; `refresh` the
+/// optional refresh token.
+fn auth_init_script(token: &str, refresh: Option<&str>) -> Option<String> {
     if token.is_empty() {
         return None;
     }
-    let esc = token.replace('\\', "\\\\").replace('\'', "\\'");
+    let tok = js_str(token);
+    let refresh_line = match refresh {
+        Some(r) if !r.is_empty() => {
+            format!("localStorage.setItem('refresh_token',{});", js_str(r))
+        }
+        _ => String::new(),
+    };
+    // ponytail: sync XHR is deprecated but is the reliable way to seed `auth_user`
+    // before the SPA boots; this is a controlled, same-origin embedded webview.
     Some(format!(
-        "try{{localStorage.setItem('access_token','{esc}');\
-         localStorage.setItem('auth_token','{esc}');}}catch(e){{}}"
+        "try{{\
+           localStorage.setItem('access_token',{tok});\
+           localStorage.setItem('auth_token',{tok});\
+           {refresh_line}\
+           if(!localStorage.getItem('auth_user')){{\
+             var x=new XMLHttpRequest();\
+             x.open('GET','/api/v1/users/me',false);\
+             x.setRequestHeader('Authorization','Bearer '+{tok});\
+             x.send();\
+             if(x.status>=200&&x.status<300){{\
+               var r=JSON.parse(x.responseText);\
+               var u=(r&&r.data)?r.data:r;\
+               localStorage.setItem('auth_user',JSON.stringify(u));\
+             }}\
+           }}\
+         }}catch(e){{}}"
     ))
 }
 
@@ -130,15 +169,18 @@ fn main() {
     let init_script = if args.no_auth {
         None
     } else {
+        let refresh = std::env::var("A3S_OS_REFRESH_TOKEN").ok();
         std::env::var(&args.token_env)
             .ok()
-            .and_then(|t| auth_init_script(&t))
+            .and_then(|t| auth_init_script(&t, refresh.as_deref()))
     };
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_title(&args.title)
         .with_inner_size(LogicalSize::new(args.width, args.height))
+        // Spawned detached from the TUI — bring the popup to the front.
+        .with_focused(true)
         .build(&event_loop)
         .expect("create window");
 
@@ -210,10 +252,21 @@ mod tests {
     }
 
     #[test]
-    fn auth_script_seeds_both_keys_and_escapes() {
-        let s = auth_init_script("tok'1").unwrap();
+    fn auth_script_seeds_tokens_user_and_escapes() {
+        let s = auth_init_script("tok'1", Some("ref2")).unwrap();
         assert!(s.contains("access_token") && s.contains("auth_token"));
         assert!(s.contains("tok\\'1")); // single quote escaped
-        assert!(auth_init_script("").is_none());
+                                        // resolves + seeds the required user object
+        assert!(s.contains("/api/v1/users/me") && s.contains("auth_user"));
+        // refresh token seeded when present
+        assert!(s.contains("refresh_token") && s.contains("ref2"));
+        assert!(auth_init_script("", None).is_none());
+    }
+
+    #[test]
+    fn auth_script_omits_refresh_when_absent() {
+        let s = auth_init_script("tok", None).unwrap();
+        assert!(!s.contains("refresh_token"));
+        assert!(s.contains("auth_user")); // user resolution still present
     }
 }
