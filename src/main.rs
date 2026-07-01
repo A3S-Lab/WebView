@@ -222,10 +222,10 @@ mod macos_titlebar {
     use objc2::runtime::{AnyObject, NSObject, Sel};
     use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
-        NSButton, NSImage, NSLayoutAttribute, NSStackView, NSTitlebarAccessoryViewController,
-        NSWindow,
+        NSButton, NSCellImagePosition, NSImage, NSImageScaling, NSLayoutAttribute,
+        NSTitlebarAccessoryViewController, NSView, NSWindow,
     };
-    use objc2_foundation::NSString;
+    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
     use std::ffi::c_void;
 
     define_class!(
@@ -290,16 +290,27 @@ mod macos_titlebar {
         // Bind the &AnyObject coercion once (deref: Retained -> NavTarget -> NSObject -> AnyObject).
         let target_any: &AnyObject = &target;
 
+        // Lay the buttons out by explicit frame: an NSTitlebarAccessoryViewController
+        // renders EMPTY if its view has no concrete size, so we avoid Auto Layout
+        // (a frame-less NSStackView collapses to zero) and size everything by hand.
+        // Buttons fill the titlebar height (icon centered via ImageOnly), borderless
+        // template icons at a small point size so they read as native chrome.
+        let (bw, bh) = (30.0_f64, 28.0_f64);
         // symbol = SF Symbol name (macOS 11+); fallback = accessibility label AND
         // the text glyph used if the symbol image is unavailable.
-        let make = |symbol: &str, fallback: &str, action: Sel| -> Retained<NSButton> {
-            let button = match NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        let make = |symbol: &str, fallback: &str, action: Sel, x: f64| -> Retained<NSButton> {
+            let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
                 &NSString::from_str(symbol),
                 Some(&NSString::from_str(fallback)),
-            ) {
+            );
+            if let Some(img) = &image {
+                img.setTemplate(true); // tint to the titlebar's label colour
+                img.setSize(NSSize::new(14.0, 14.0)); // small, chrome-sized glyph
+            }
+            let button = match &image {
                 Some(image) => unsafe {
                     NSButton::buttonWithImage_target_action(
-                        &image,
+                        image,
                         Some(target_any),
                         Some(action),
                         mtm,
@@ -314,24 +325,31 @@ mod macos_titlebar {
                     )
                 },
             };
-            // Borderless icon look that fits the titlebar; still clickable.
+            // Borderless icon-only look; the icon centers in the full-height button.
             button.setBordered(false);
+            button.setImagePosition(NSCellImagePosition::ImageOnly);
+            button.setImageScaling(NSImageScaling::ScaleProportionallyDown);
+            button.setFrame(NSRect::new(NSPoint::new(x, 0.0), NSSize::new(bw, bh)));
             button
         };
 
-        let back = make("chevron.backward", "←", sel!(navBack:));
-        let forward = make("chevron.forward", "→", sel!(navForward:));
-        let reload = make("arrow.clockwise", "↻", sel!(navReload:));
+        let back = make("chevron.backward", "←", sel!(navBack:), 0.0);
+        let forward = make("chevron.forward", "→", sel!(navForward:), bw);
+        let reload = make("arrow.clockwise", "↻", sel!(navReload:), bw * 2.0);
 
-        // Horizontal stack (default orientation) holding the three buttons. It is
+        // Manually-framed container so the accessory has a concrete size. It is
         // retained by the accessory VC (setView), which is retained by the window.
-        let stack = NSStackView::new(mtm);
-        stack.addArrangedSubview(&back);
-        stack.addArrangedSubview(&forward);
-        stack.addArrangedSubview(&reload);
+        let container = NSView::new(mtm);
+        container.setFrame(NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(bw * 3.0, bh),
+        ));
+        container.addSubview(&back);
+        container.addSubview(&forward);
+        container.addSubview(&reload);
 
         let accessory = NSTitlebarAccessoryViewController::new(mtm);
-        accessory.setView(&stack);
+        accessory.setView(&container);
         // Trailing == RTL-aware right edge of the titlebar. Use ::Right for a
         // hard right-edge if RTL awareness is unwanted.
         accessory.setLayoutAttribute(NSLayoutAttribute::Trailing);
