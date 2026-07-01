@@ -1,6 +1,6 @@
 [package]
 name = "a3s-webview"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Native WebView popup helper for the a3s code TUI (RemoteUI) — renders 书安OS viewUrls in a sized window"
 license = "MIT"
@@ -18,6 +18,24 @@ path = "src/main.rs"
 # Windows the WebView2 runtime (ships with Win10+).
 wry = "0.55"
 tao = "0.35"
+
+# macOS-only: native titlebar back/forward/reload buttons via AppKit. These are
+# the exact versions tao/wry already lock, so nothing new is unified.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString"] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSResponder",
+    "NSView",
+    "NSControl",
+    "NSCell",
+    "NSButton",
+    "NSImage",
+    "NSViewController",
+    "NSTitlebarAccessoryViewController",
+    "NSWindow",
+    "NSLayoutConstraint",
+] }
 
 [profile.release]
 opt-level = "z"
