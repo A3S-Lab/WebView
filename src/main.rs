@@ -222,8 +222,8 @@ mod macos_titlebar {
     use objc2::runtime::{AnyObject, NSObject, Sel};
     use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
-        NSButton, NSCellImagePosition, NSImage, NSImageScaling, NSLayoutAttribute,
-        NSTitlebarAccessoryViewController, NSView, NSWindow,
+        NSAutoresizingMaskOptions, NSButton, NSCellImagePosition, NSImage, NSImageScaling,
+        NSLayoutAttribute, NSTitlebarAccessoryViewController, NSView, NSWindow,
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
     use std::ffi::c_void;
@@ -293,9 +293,10 @@ mod macos_titlebar {
         // Lay the buttons out by explicit frame: an NSTitlebarAccessoryViewController
         // renders EMPTY if its view has no concrete size, so we avoid Auto Layout
         // (a frame-less NSStackView collapses to zero) and size everything by hand.
-        // Buttons fill the titlebar height (icon centered via ImageOnly), borderless
-        // template icons at a small point size so they read as native chrome.
-        let (bw, bh) = (30.0_f64, 28.0_f64);
+        // Buttons are vertically centered in the titlebar (bh < container height +
+        // flexible top/bottom autoresizing margins), with a rounded hover background
+        // (bordered + showsBorderOnlyWhileMouseInside) so they read as buttons.
+        let (bw, bh, ch) = (30.0_f64, 24.0_f64, 28.0_f64);
         // symbol = SF Symbol name (macOS 11+); fallback = accessibility label AND
         // the text glyph used if the symbol image is unavailable.
         let make = |symbol: &str, fallback: &str, action: Sel, x: f64| -> Retained<NSButton> {
@@ -325,11 +326,18 @@ mod macos_titlebar {
                     )
                 },
             };
-            // Borderless icon-only look; the icon centers in the full-height button.
-            button.setBordered(false);
+            // Icon-only; the rounded bezel (hover background) appears only while the
+            // pointer is inside, so at rest it's just the glyph.
+            button.setBordered(true);
+            button.setShowsBorderOnlyWhileMouseInside(true);
             button.setImagePosition(NSCellImagePosition::ImageOnly);
             button.setImageScaling(NSImageScaling::ScaleProportionallyDown);
-            button.setFrame(NSRect::new(NSPoint::new(x, 0.0), NSSize::new(bw, bh)));
+            button.setFrame(NSRect::new(NSPoint::new(x, (ch - bh) / 2.0), NSSize::new(bw, bh)));
+            // Flexible top+bottom margins → stay vertically centered if AppKit sizes
+            // the accessory to a different titlebar height.
+            button.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewMinYMargin | NSAutoresizingMaskOptions::ViewMaxYMargin,
+            );
             button
         };
 
@@ -340,10 +348,9 @@ mod macos_titlebar {
         // Manually-framed container so the accessory has a concrete size. It is
         // retained by the accessory VC (setView), which is retained by the window.
         let container = NSView::new(mtm);
-        container.setFrame(NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(bw * 3.0, bh),
-        ));
+        container.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(bw * 3.0, ch)));
+        // Fill the titlebar height so the centered buttons sit in the middle.
+        container.setAutoresizingMask(NSAutoresizingMaskOptions::ViewHeightSizable);
         container.addSubview(&back);
         container.addSubview(&forward);
         container.addSubview(&reload);
