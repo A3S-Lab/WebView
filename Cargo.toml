@@ -1,6 +1,6 @@
 [package]
 name = "a3s-webview"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Native WebView popup helper for the a3s code TUI (RemoteUI) — renders 书安OS viewUrls in a sized window"
 license = "MIT"

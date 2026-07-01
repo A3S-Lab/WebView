@@ -157,6 +157,26 @@ fn auth_init_script(token: &str, refresh: Option<&str>) -> Option<String> {
     ))
 }
 
+/// JS injected into every popup: a small fixed top-right toolbar with
+/// back / forward / reload, wired to the page history + reload. Added on
+/// `DOMContentLoaded` (so `document.body` exists) and appended to the
+/// documentElement as a fallback so an SPA re-rendering its root can't drop it.
+const NAV_TOOLBAR_SCRIPT: &str = r#"
+window.addEventListener('DOMContentLoaded',function(){try{
+var bar=document.createElement('div');
+bar.style.cssText='position:fixed;top:10px;right:10px;z-index:2147483647;display:flex;gap:4px;padding:4px;background:rgba(30,30,40,.78);border-radius:8px;box-shadow:0 1px 6px rgba(0,0,0,.35);font-family:system-ui,sans-serif';
+function mk(l,t,f){var b=document.createElement('button');b.textContent=l;b.title=t;
+b.style.cssText='all:unset;cursor:pointer;width:26px;height:26px;line-height:26px;text-align:center;color:#e6e6f0;font-size:15px;border-radius:6px';
+b.onmouseenter=function(){b.style.background='rgba(255,255,255,.15)'};
+b.onmouseleave=function(){b.style.background='transparent'};
+b.onclick=f;return b;}
+bar.appendChild(mk('←','Back',function(){history.back()}));
+bar.appendChild(mk('→','Forward',function(){history.forward()}));
+bar.appendChild(mk('↻','Reload',function(){location.reload()}));
+(document.body||document.documentElement).appendChild(bar);
+}catch(e){}});
+"#;
+
 fn main() {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
@@ -166,7 +186,7 @@ fn main() {
         }
     };
 
-    let init_script = if args.no_auth {
+    let auth_script = if args.no_auth {
         None
     } else {
         let refresh = std::env::var("A3S_OS_REFRESH_TOKEN").ok();
@@ -174,6 +194,9 @@ fn main() {
             .ok()
             .and_then(|t| auth_init_script(&t, refresh.as_deref()))
     };
+    // One initialization script: auth seeding (when available) followed by the
+    // nav toolbar, which is always injected so every popup has back/forward/reload.
+    let init_script = format!("{}{NAV_TOOLBAR_SCRIPT}", auth_script.unwrap_or_default());
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -184,10 +207,9 @@ fn main() {
         .build(&event_loop)
         .expect("create window");
 
-    let mut builder = WebViewBuilder::new().with_url(&args.url);
-    if let Some(script) = &init_script {
-        builder = builder.with_initialization_script(script);
-    }
+    let mut builder = WebViewBuilder::new()
+        .with_url(&args.url)
+        .with_initialization_script(&init_script);
     if !args.headers.is_empty() {
         builder = builder.with_headers(args.headers);
     }
@@ -268,5 +290,18 @@ mod tests {
         let s = auth_init_script("tok", None).unwrap();
         assert!(!s.contains("refresh_token"));
         assert!(s.contains("auth_user")); // user resolution still present
+    }
+
+    #[test]
+    fn nav_toolbar_wires_back_forward_reload() {
+        assert!(NAV_TOOLBAR_SCRIPT.contains("history.back()"));
+        assert!(NAV_TOOLBAR_SCRIPT.contains("history.forward()"));
+        assert!(NAV_TOOLBAR_SCRIPT.contains("location.reload()"));
+        // injected after the DOM exists, fixed in the top-right corner
+        assert!(NAV_TOOLBAR_SCRIPT.contains("DOMContentLoaded"));
+        assert!(
+            NAV_TOOLBAR_SCRIPT.contains("position:fixed")
+                && NAV_TOOLBAR_SCRIPT.contains("right:10px")
+        );
     }
 }
