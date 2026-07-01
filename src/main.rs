@@ -11,6 +11,15 @@
 //! It opens one native window at the requested size, loads the URL, and runs
 //! until the window is closed.
 //!
+//! ## Navigation controls
+//! back / forward / reload are exposed as buttons. On macOS they are NATIVE
+//! `NSButton`s placed on the trailing (right) side of the window titlebar via an
+//! `NSTitlebarAccessoryViewController` (see the `macos_titlebar` module); a click
+//! posts a `UserEvent` through the tao event loop, and the run-closure runs the
+//! matching `history.back()` / `history.forward()` / `location.reload()` in the
+//! webview. On Linux/Windows the same three controls are injected as an HTML
+//! toolbar (`NAV_TOOLBAR_SCRIPT`).
+//!
 //! ## Auth
 //! The 书安OS web app authenticates from `localStorage`, not a cookie — so a
 //! freshly opened WebView would land on the login page. Its `restoreAuth` (see
@@ -26,13 +35,18 @@
 use tao::{
     dpi::LogicalSize,
     event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    event_loop::{ControlFlow, EventLoopBuilder},
     window::WindowBuilder,
 };
 use wry::{
     http::{HeaderMap, HeaderName, HeaderValue},
     WebViewBuilder,
 };
+
+#[cfg(target_os = "macos")]
+use std::sync::OnceLock;
+#[cfg(target_os = "macos")]
+use tao::{event_loop::EventLoopProxy, platform::macos::WindowExtMacOS};
 
 struct Args {
     url: String,
@@ -157,10 +171,13 @@ fn auth_init_script(token: &str, refresh: Option<&str>) -> Option<String> {
     ))
 }
 
-/// JS injected into every popup: a small fixed top-right toolbar with
-/// back / forward / reload, wired to the page history + reload. Added on
-/// `DOMContentLoaded` (so `document.body` exists) and appended to the
-/// documentElement as a fallback so an SPA re-rendering its root can't drop it.
+/// JS injected into every popup on Linux/Windows: a small fixed top-right toolbar
+/// with back / forward / reload, wired to the page history + reload. On macOS the
+/// equivalent lives in the NATIVE window titlebar (see the `macos_titlebar`
+/// module), so this script is not injected there. Added on `DOMContentLoaded`
+/// (so `document.body` exists) and appended to the documentElement as a fallback
+/// so an SPA re-rendering its root can't drop it.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 const NAV_TOOLBAR_SCRIPT: &str = r#"
 window.addEventListener('DOMContentLoaded',function(){try{
 var bar=document.createElement('div');
@@ -176,6 +193,153 @@ bar.appendChild(mk('↻','Reload',function(){location.reload()}));
 (document.body||document.documentElement).appendChild(bar);
 }catch(e){}});
 "#;
+
+/// A navigation command posted from a native macOS titlebar button into the tao
+/// event loop; the run-closure turns it into the matching `webview.evaluate_script`.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+enum UserEvent {
+    Back,
+    Forward,
+    Reload,
+}
+
+/// The tao event-loop proxy the native titlebar buttons post through. Set once at
+/// startup (main thread) before the buttons can fire; the objc action methods read
+/// it to translate a click into a `UserEvent`. `EventLoopProxy<UserEvent>` is
+/// `Send + Sync` (macOS impl wraps a `crossbeam_channel::Sender`), so it is a valid
+/// `static`.
+#[cfg(target_os = "macos")]
+static NAV_PROXY: OnceLock<EventLoopProxy<UserEvent>> = OnceLock::new();
+
+/// Native macOS titlebar navigation buttons (back / forward / reload), placed on
+/// the trailing side of the window titlebar via an
+/// `NSTitlebarAccessoryViewController`. This replaces the HTML toolbar on macOS.
+#[cfg(target_os = "macos")]
+mod macos_titlebar {
+    use super::{UserEvent, NAV_PROXY};
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyObject, NSObject, Sel};
+    use objc2::{define_class, msg_send, sel, MainThreadMarker, MainThreadOnly};
+    use objc2_app_kit::{
+        NSButton, NSImage, NSLayoutAttribute, NSStackView, NSTitlebarAccessoryViewController,
+        NSWindow,
+    };
+    use objc2_foundation::NSString;
+    use std::ffi::c_void;
+
+    define_class!(
+        // SAFETY:
+        // - The superclass `NSObject` has no subclassing requirements.
+        // - `NavTarget` does not implement `Drop`.
+        // - `MainThreadOnly` is correct: it is only created and messaged on the
+        //   main thread (from the AppKit run loop / the setup call in `main`).
+        #[unsafe(super(NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "A3sWebViewNavTarget"]
+        pub(crate) struct NavTarget;
+
+        impl NavTarget {
+            #[unsafe(method(navBack:))]
+            fn nav_back(&self, _sender: Option<&AnyObject>) {
+                Self::post(UserEvent::Back);
+            }
+
+            #[unsafe(method(navForward:))]
+            fn nav_forward(&self, _sender: Option<&AnyObject>) {
+                Self::post(UserEvent::Forward);
+            }
+
+            #[unsafe(method(navReload:))]
+            fn nav_reload(&self, _sender: Option<&AnyObject>) {
+                Self::post(UserEvent::Reload);
+            }
+        }
+    );
+
+    impl NavTarget {
+        fn new(mtm: MainThreadMarker) -> Retained<Self> {
+            // No custom ivars: the proxy lives in the `NAV_PROXY` static, so the
+            // ivars type defaults to `()`.
+            let this = mtm.alloc::<Self>().set_ivars(());
+            unsafe { msg_send![super(this), init] }
+        }
+
+        fn post(event: UserEvent) {
+            if let Some(proxy) = NAV_PROXY.get() {
+                // The loop is only gone during teardown; dropping the event then is fine.
+                let _ = proxy.send_event(event);
+            }
+        }
+    }
+
+    /// Build three native icon buttons and attach them to the trailing side of the
+    /// window titlebar. Returns the custom target, which the caller MUST keep alive
+    /// for the lifetime of the window: `NSControl` holds its `target` weakly, so
+    /// dropping it turns the next click into a use-after-free.
+    ///
+    /// # Safety
+    /// `ns_window_ptr` must be the live `NSWindow` pointer returned by tao's
+    /// `WindowExtMacOS::ns_window()`, and this must be called on the main thread.
+    pub(crate) unsafe fn install(ns_window_ptr: *mut c_void) -> Retained<NavTarget> {
+        let mtm = MainThreadMarker::new().expect("titlebar setup must run on the main thread");
+        // Borrow (do NOT take ownership of) the NSWindow that tao already owns.
+        let window: &NSWindow = unsafe { &*(ns_window_ptr as *const NSWindow) };
+
+        let target = NavTarget::new(mtm);
+        // Bind the &AnyObject coercion once (deref: Retained -> NavTarget -> NSObject -> AnyObject).
+        let target_any: &AnyObject = &target;
+
+        // symbol = SF Symbol name (macOS 11+); fallback = accessibility label AND
+        // the text glyph used if the symbol image is unavailable.
+        let make = |symbol: &str, fallback: &str, action: Sel| -> Retained<NSButton> {
+            let button = match NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                &NSString::from_str(symbol),
+                Some(&NSString::from_str(fallback)),
+            ) {
+                Some(image) => unsafe {
+                    NSButton::buttonWithImage_target_action(
+                        &image,
+                        Some(target_any),
+                        Some(action),
+                        mtm,
+                    )
+                },
+                None => unsafe {
+                    NSButton::buttonWithTitle_target_action(
+                        &NSString::from_str(fallback),
+                        Some(target_any),
+                        Some(action),
+                        mtm,
+                    )
+                },
+            };
+            // Borderless icon look that fits the titlebar; still clickable.
+            button.setBordered(false);
+            button
+        };
+
+        let back = make("chevron.backward", "←", sel!(navBack:));
+        let forward = make("chevron.forward", "→", sel!(navForward:));
+        let reload = make("arrow.clockwise", "↻", sel!(navReload:));
+
+        // Horizontal stack (default orientation) holding the three buttons. It is
+        // retained by the accessory VC (setView), which is retained by the window.
+        let stack = NSStackView::new(mtm);
+        stack.addArrangedSubview(&back);
+        stack.addArrangedSubview(&forward);
+        stack.addArrangedSubview(&reload);
+
+        let accessory = NSTitlebarAccessoryViewController::new(mtm);
+        accessory.setView(&stack);
+        // Trailing == RTL-aware right edge of the titlebar. Use ::Right for a
+        // hard right-edge if RTL awareness is unwanted.
+        accessory.setLayoutAttribute(NSLayoutAttribute::Trailing);
+        window.addTitlebarAccessoryViewController(&accessory);
+
+        target
+    }
+}
 
 fn main() {
     let args = match parse_args(std::env::args().skip(1)) {
@@ -194,11 +358,16 @@ fn main() {
             .ok()
             .and_then(|t| auth_init_script(&t, refresh.as_deref()))
     };
-    // One initialization script: auth seeding (when available) followed by the
-    // nav toolbar, which is always injected so every popup has back/forward/reload.
-    let init_script = format!("{}{NAV_TOOLBAR_SCRIPT}", auth_script.unwrap_or_default());
+    let auth = auth_script.unwrap_or_default();
+    // macOS renders navigation in the native titlebar, so the HTML toolbar is only
+    // injected on the other platforms.
+    #[cfg(target_os = "macos")]
+    let init_script = auth;
+    #[cfg(not(target_os = "macos"))]
+    let init_script = format!("{auth}{NAV_TOOLBAR_SCRIPT}");
 
-    let event_loop = EventLoop::new();
+    // Carry `UserEvent`s so native titlebar clicks can be routed back into the loop.
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let window = WindowBuilder::new()
         .with_title(&args.title)
         .with_inner_size(LogicalSize::new(args.width, args.height))
@@ -207,22 +376,40 @@ fn main() {
         .build(&event_loop)
         .expect("create window");
 
+    // macOS: install native titlebar buttons on the main thread, after the window
+    // exists. Keep `_nav_target` alive for the whole run (weak target-action).
+    #[cfg(target_os = "macos")]
+    let _nav_target = {
+        // Only ever one window/proxy here; a second set() would be ignored.
+        let _ = NAV_PROXY.set(event_loop.create_proxy());
+        unsafe { macos_titlebar::install(window.ns_window()) }
+    };
+
     let mut builder = WebViewBuilder::new()
         .with_url(&args.url)
         .with_initialization_script(&init_script);
     if !args.headers.is_empty() {
         builder = builder.with_headers(args.headers);
     }
-    let _webview = builder.build(&window).expect("create webview");
+    // Owned by the run-closure so titlebar UserEvents can drive evaluate_script.
+    let webview = builder.build(&window).expect("create webview");
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
-        if let Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            ..
-        } = event
-        {
-            *control_flow = ControlFlow::Exit;
+        match event {
+            Event::UserEvent(nav) => {
+                let js = match nav {
+                    UserEvent::Back => "history.back()",
+                    UserEvent::Forward => "history.forward()",
+                    UserEvent::Reload => "location.reload()",
+                };
+                let _ = webview.evaluate_script(js);
+            }
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => *control_flow = ControlFlow::Exit,
+            _ => {}
         }
     });
 }

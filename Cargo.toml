@@ -19,6 +19,24 @@ path = "src/main.rs"
 wry = "0.55"
 tao = "0.35"
 
+# macOS-only: native titlebar back/forward/reload buttons via AppKit. These are
+# the exact versions tao/wry already lock, so nothing new is unified.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString"] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSResponder",
+    "NSView",
+    "NSControl",
+    "NSButton",
+    "NSImage",
+    "NSStackView",
+    "NSViewController",
+    "NSTitlebarAccessoryViewController",
+    "NSWindow",
+    "NSLayoutConstraint",
+] }
+
 [profile.release]
 opt-level = "z"
 lto = true
