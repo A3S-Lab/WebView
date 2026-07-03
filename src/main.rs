@@ -1,7 +1,7 @@
 //! `a3s-webview` — a tiny native WebView window helper for the a3s code TUI.
 //!
 //! The TUI is a terminal app and can't embed a WebView in its text grid, so when
-//! 书安OS's progressive API returns a `view` object (url + size) that is a
+//! A3S OS's progressive API returns a `view` object (url + size) that is a
 //! *partial* page meant for a sized popup (not a full browser tab), it spawns this:
 //!
 //! ```text
@@ -21,7 +21,7 @@
 //! toolbar (`NAV_TOOLBAR_SCRIPT`).
 //!
 //! ## Auth
-//! The 书安OS web app authenticates from `localStorage`, not a cookie — so a
+//! The A3S OS web app authenticates from `localStorage`, not a cookie — so a
 //! freshly opened WebView would land on the login page. Its `restoreAuth` (see
 //! apps/web `models/auth.model.ts`) requires `auth_token`/`access_token`, an
 //! optional `refresh_token`, AND an `auth_user` object — a token alone is not
@@ -65,7 +65,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
     let mut url: Option<String> = None;
     let mut width = 900.0_f64;
     let mut height = 680.0_f64;
-    let mut title = String::from("渐进式UI");
+    let mut title = String::from("A3S RemoteUI");
     let mut headers = HeaderMap::new();
     let mut token_env = String::from("A3S_OS_TOKEN");
     let mut no_auth = false;
@@ -127,7 +127,7 @@ fn js_str(s: &str) -> String {
 }
 
 /// JS run at document-start (before the page's own scripts) that injects the full
-/// 书安OS session into `localStorage` so the SPA's `restoreAuth` loads
+/// A3S OS session into `localStorage` so the SPA's `restoreAuth` loads
 /// authenticated. That needs THREE things, not just the token: `auth_token` /
 /// `access_token`, an optional `refresh_token`, and an `auth_user` object (a user
 /// with an `id`) — without `auth_user` the SPA clears auth and shows the login
@@ -332,11 +332,15 @@ mod macos_titlebar {
             button.setShowsBorderOnlyWhileMouseInside(true);
             button.setImagePosition(NSCellImagePosition::ImageOnly);
             button.setImageScaling(NSImageScaling::ScaleProportionallyDown);
-            button.setFrame(NSRect::new(NSPoint::new(x, (ch - bh) / 2.0), NSSize::new(bw, bh)));
+            button.setFrame(NSRect::new(
+                NSPoint::new(x, (ch - bh) / 2.0),
+                NSSize::new(bw, bh),
+            ));
             // Flexible top+bottom margins → stay vertically centered if AppKit sizes
             // the accessory to a different titlebar height.
             button.setAutoresizingMask(
-                NSAutoresizingMaskOptions::ViewMinYMargin | NSAutoresizingMaskOptions::ViewMaxYMargin,
+                NSAutoresizingMaskOptions::ViewMinYMargin
+                    | NSAutoresizingMaskOptions::ViewMaxYMargin,
             );
             button
         };
@@ -348,7 +352,10 @@ mod macos_titlebar {
         // Manually-framed container so the accessory has a concrete size. It is
         // retained by the accessory VC (setView), which is retained by the window.
         let container = NSView::new(mtm);
-        container.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(bw * 3.0, ch)));
+        container.setFrame(NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(bw * 3.0, ch),
+        ));
         // Fill the titlebar height so the centered buttons sit in the middle.
         container.setAutoresizingMask(NSAutoresizingMaskOptions::ViewHeightSizable);
         container.addSubview(&back);
@@ -470,6 +477,12 @@ mod tests {
         assert_eq!(a.title, "T");
         assert_eq!(a.width, 4000.0); // clamped down
         assert_eq!(a.height, 180.0); // clamped up
+    }
+
+    #[test]
+    fn default_title_is_remoteui() {
+        let a = args(&["--url", "https://x"]).unwrap();
+        assert_eq!(a.title, "A3S RemoteUI");
     }
 
     #[test]
