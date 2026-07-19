@@ -275,7 +275,7 @@ pub(crate) fn show_without_focus(window: &Window) {
 
 pub(crate) fn resize_and_center(window: &Window, size: IslandSize) {
     #[cfg(target_os = "macos")]
-    if resize_and_center_macos(window, size) {
+    if resize_and_center_macos(window, size, false) {
         return;
     }
 
@@ -296,8 +296,17 @@ pub(crate) fn resize_and_center(window: &Window, size: IslandSize) {
     window.set_outer_position(layout.position);
 }
 
+pub(crate) fn animate_resize_and_center(window: &Window, size: IslandSize) {
+    #[cfg(target_os = "macos")]
+    if resize_and_center_macos(window, size, true) {
+        return;
+    }
+
+    resize_and_center(window, size);
+}
+
 #[cfg(target_os = "macos")]
-fn resize_and_center_macos(window: &Window, size: IslandSize) -> bool {
+fn resize_and_center_macos(window: &Window, size: IslandSize, animated: bool) -> bool {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSScreen, NSWindow};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
@@ -328,9 +337,10 @@ fn resize_and_center_macos(window: &Window, size: IslandSize) -> bool {
     // status-level island can occupy the physical top edge without size drift.
     let x = screen_frame.origin.x + (screen_frame.size.width - width) / 2.0;
     let y = screen_frame.origin.y + screen_frame.size.height - top_offset - height;
-    ns_window.setFrame_display(
+    ns_window.setFrame_display_animate(
         NSRect::new(NSPoint::new(x, y), NSSize::new(width, height)),
         true,
+        animated,
     );
     true
 }
@@ -420,7 +430,9 @@ mod tests {
         let size = IslandSize::Collapsed.logical_size();
 
         assert_eq!(size, LogicalSize::new(488.0, 124.0));
-        assert!(HORIZONTAL_GLOW_INSET >= 46.0);
-        assert!(VERTICAL_GLOW_INSET >= 30.0);
+        const {
+            assert!(HORIZONTAL_GLOW_INSET >= 46.0);
+            assert!(VERTICAL_GLOW_INSET >= 30.0);
+        }
     }
 }

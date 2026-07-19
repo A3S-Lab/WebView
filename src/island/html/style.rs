@@ -15,25 +15,45 @@ pub(super) const ISLAND_STYLE: &str = r#"
     button { font-family: inherit; }
     #island {
       --island-radius: 30px;
+      --island-resize-duration: 260ms;
+      --island-motion-ease: cubic-bezier(.22,1,.36,1);
       position: absolute;
       top: 32px;
       left: 50%;
       width: 392px;
       height: 60px;
       padding: 1px;
-      transform: translateX(-50%);
+      opacity: 1;
+      transform: translate3d(-50%, 0, 0) scale(1);
+      transform-origin: 50% 0;
       overflow: visible;
       color: rgba(255,255,255,.96);
       background: rgba(255,255,255,.105);
       border-radius: var(--island-radius);
       box-shadow: 0 6px 18px rgba(0,0,0,.34);
       cursor: default;
-      transition: width 220ms cubic-bezier(.2,.84,.2,1),
-                  height 220ms cubic-bezier(.2,.84,.2,1),
-                  border-radius 220ms ease;
+      transition: width var(--island-resize-duration) var(--island-motion-ease),
+                  height var(--island-resize-duration) var(--island-motion-ease),
+                  border-radius var(--island-resize-duration) var(--island-motion-ease),
+                  opacity 180ms ease,
+                  transform 240ms var(--island-motion-ease);
       contain: layout;
       isolation: isolate;
+      backface-visibility: hidden;
       z-index: 0;
+    }
+    #island.booting,
+    #island.closing {
+      opacity: 0;
+      transform: translate3d(-50%, -8px, 0) scale(.97);
+      pointer-events: none;
+    }
+    #island.resizing {
+      will-change: width, height, border-radius;
+    }
+    #island.booting,
+    #island.closing {
+      will-change: opacity, transform;
     }
     #island::before,
     #island::after {
@@ -120,6 +140,11 @@ pub(super) const ISLAND_STYLE: &str = r#"
     #island.active-work::after {
       opacity: .56;
       animation: neon-shift 6.8s linear infinite, aura-breathe 2.35s ease-in-out infinite;
+    }
+    #island.resizing.active-work,
+    #island.resizing.active-work::before,
+    #island.resizing.active-work::after {
+      animation-play-state: paused;
     }
     #island.has-attention:not(.active-work) {
       padding: 1.5px;
@@ -331,7 +356,11 @@ pub(super) const ISLAND_STYLE: &str = r#"
     }
     #island.expanded .chevron { transform: rotate(180deg); }
     .panel {
-      height: calc(100% - 57px);
+      position: absolute;
+      top: 57px;
+      left: 0;
+      width: 560px;
+      height: 303px;
       display: flex;
       flex-direction: column;
       padding: 3px 9px 10px;
@@ -866,14 +895,10 @@ pub(super) const ISLAND_STYLE: &str = r#"
         transform: scale(.98, .94);
       }
     }
-    html.webview-backgrounded #island,
-    html.webview-backgrounded #island::before,
-    html.webview-backgrounded #island::after,
-    html.webview-backgrounded .panel,
-    html.webview-backgrounded .chevron,
-    html.webview-backgrounded .progress-fill,
+    html.webview-backgrounded #island.active-work,
+    html.webview-backgrounded #island.active-work::before,
+    html.webview-backgrounded #island.active-work::after,
     html.webview-backgrounded .attention-filter {
-      transition: none !important;
       animation: none !important;
     }
 "#;

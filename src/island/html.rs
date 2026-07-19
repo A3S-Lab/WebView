@@ -16,7 +16,7 @@ const DOCUMENT_BODY: &str = r#"
   </style>
 </head>
 <body>
-  <main id="island" aria-label="A3S agent activity">
+  <main id="island" class="booting" aria-label="A3S agent activity">
     <div class="surface">
       <section class="summary" id="summary" role="button" aria-label="Show agent activity"
                aria-expanded="false">
@@ -128,10 +128,43 @@ mod tests {
     }
 
     #[test]
-    fn hidden_webview_directly_paints_neon_and_completes_resize() {
+    fn lifecycle_motion_is_paint_ready_event_driven_and_defers_heavy_rows() {
+        let html = html();
+        assert!(html.contains("class=\"booting\""));
+        assert!(html.contains("#island.booting"));
+        assert!(html.contains("#island.closing"));
+        assert!(html.contains("requestAnimationFrame"));
+        assert!(html.contains("transitionend"));
+        assert!(html.contains("pendingActivityRender"));
+        assert!(html.contains("width: 560px;\n      height: 303px;"));
+        assert!(html.contains("post('close-complete')"));
+        assert!(html.contains("beginClose"));
+        assert!(!html.contains("window.setTimeout(completeCollapse, 235)"));
+
+        let set_expanded = html
+            .split_once("function setExpanded")
+            .and_then(|(_, tail)| tail.split_once("function beginCollapse"))
+            .map(|(body, _)| body)
+            .expect("setExpanded function");
+        assert!(!set_expanded.contains("renderActivities("));
+
+        let begin_collapse = html
+            .split_once("function beginCollapse")
+            .and_then(|(_, tail)| tail.split_once("function finishCollapse"))
+            .map(|(body, _)| body)
+            .expect("beginCollapse function");
+        assert!(!begin_collapse.contains("renderActivities("));
+    }
+
+    #[test]
+    fn backgrounded_webview_keeps_lifecycle_motion_and_directly_paints_neon() {
         let html = html();
         assert!(html.contains("webview-backgrounded"));
-        assert!(html.contains("if (document.hidden && collapsePending)"));
+        assert!(html.contains("html.webview-backgrounded #island.active-work"));
+        assert!(!html.contains("html.webview-backgrounded .panel"));
+        assert!(!html.contains("html.webview-backgrounded .chevron"));
+        assert!(!html.contains("document.hidden && collapsePending"));
+        assert!(html.contains("resizeFallbackMs"));
         assert!(html.contains("window.setInterval(paintHiddenNeon, 180)"));
         assert!(html.contains("root.style.boxShadow"));
         assert!(html.contains("addEventListener('visibilitychange'"));

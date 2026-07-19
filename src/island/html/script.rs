@@ -49,6 +49,8 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
       'other'
     ];
     const filters = ['all', 'needs_attention', 'running', 'recent'];
+    const resizeFallbackMs = 360;
+    const closeFallbackMs = 260;
     const seenAttentionKeys = new Set();
     const attentionKeyOrder = [];
     const replyDrafts = new Map();
@@ -57,8 +59,15 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
     let expanded = false;
     let expandPending = false;
     let collapsePending = false;
+    let collapseCompletePosted = false;
     let attentionExpandQueued = false;
-    let collapseTimer = 0;
+    let resizeTimer = 0;
+    let resizeCompletion = null;
+    let closeTimer = 0;
+    let closing = false;
+    let closeCompletePosted = false;
+    let revealed = false;
+    let pendingActivityRender = false;
     let neonTimer = 0;
     let elapsedTimer = 0;
     let model = null;
@@ -84,8 +93,8 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
       : 0;
     const plural = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
     const completeCollapse = () => {
-      clearTimeout(collapseTimer);
-      collapseTimer = 0;
+      if (!collapsePending || collapseCompletePosted) return;
+      collapseCompletePosted = true;
       post('collapse-complete');
     };
 
@@ -190,7 +199,6 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
 
     const syncDocumentVisibility = () => {
       document.documentElement.classList.toggle('webview-backgrounded', document.hidden);
-      if (document.hidden && collapsePending) completeCollapse();
       syncNeon();
     };
 
@@ -640,7 +648,7 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
     }
 
     function requestExpand() {
-      if (expanded || expandPending) return;
+      if (closing || expanded || expandPending) return;
       if (collapsePending) {
         attentionExpandQueued = true;
         return;
@@ -677,8 +685,13 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
         `${data.status || 'Idle'}. ${metrics.running} running, ${metrics.total} total. Show agent activity`
       );
       handleAttention(data);
-      renderActivities(data);
+      if (root.classList.contains('resizing') || closing) {
+        pendingActivityRender = true;
+      } else {
+        renderActivities(data);
+      }
       syncNeon();
+      reveal();
     }
 
     function controlResult(result) {
@@ -719,9 +732,91 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
       turnOff.textContent = 'Try again';
     }
 
+    function flushPendingActivityRender() {
+      if (!pendingActivityRender || !model || closing) return;
+      pendingActivityRender = false;
+      renderActivities(model);
+    }
+
+    function finishResize() {
+      clearTimeout(resizeTimer);
+      resizeTimer = 0;
+      const completion = resizeCompletion;
+      resizeCompletion = null;
+      root.classList.remove('resizing');
+      flushPendingActivityRender();
+      if (completion) completion();
+    }
+
+    function beginResize(completion) {
+      clearTimeout(resizeTimer);
+      resizeTimer = 0;
+      resizeCompletion = typeof completion === 'function' ? completion : null;
+      root.classList.add('resizing');
+    }
+
+    function armResizeCompletion() {
+      if (reducedMotion.matches) {
+        finishResize();
+        return;
+      }
+      resizeTimer = window.setTimeout(finishResize, resizeFallbackMs);
+    }
+
+    function reveal() {
+      if (revealed || closing) return;
+      revealed = true;
+      const paint = () => root.classList.remove('booting');
+      if (reducedMotion.matches) {
+        paint();
+        return;
+      }
+      if (document.hidden) {
+        root.getBoundingClientRect();
+        window.setTimeout(paint, 0);
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(paint);
+      });
+    }
+
+    function completeClose() {
+      if (!closing || closeCompletePosted) return;
+      closeCompletePosted = true;
+      clearTimeout(closeTimer);
+      closeTimer = 0;
+      post('close-complete');
+    }
+
+    function beginClose() {
+      if (closing) return;
+      closing = true;
+      closeCompletePosted = false;
+      clearTimeout(resizeTimer);
+      resizeTimer = 0;
+      resizeCompletion = null;
+      pendingActivityRender = false;
+      expanded = false;
+      expandPending = false;
+      collapsePending = false;
+      collapseCompletePosted = false;
+      attentionExpandQueued = false;
+      root.classList.remove('booting', 'expanded', 'resizing');
+      root.classList.add('closing');
+      summary.setAttribute('aria-expanded', 'false');
+      syncPanelAccess();
+      if (reducedMotion.matches) {
+        completeClose();
+      } else {
+        closeTimer = window.setTimeout(completeClose, closeFallbackMs);
+      }
+    }
+
     function syncPanelAccess() {
-      panel.setAttribute('aria-hidden', expanded ? 'false' : 'true');
-      if (expanded) {
+      const accessible = expanded && !closing;
+      panel.setAttribute('aria-hidden', accessible ? 'false' : 'true');
+      if (accessible) {
         panel.removeAttribute('inert');
       } else {
         panel.setAttribute('inert', '');
@@ -729,45 +824,63 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
     }
 
     function setExpanded(next) {
-      clearTimeout(collapseTimer);
-      collapseTimer = 0;
-      expanded = next === true;
+      if (closing) return;
+      if (next !== true) {
+        finishCollapse();
+        return;
+      }
+      expanded = true;
       expandPending = false;
       collapsePending = false;
-      root.classList.toggle('expanded', expanded);
-      summary.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      collapseCompletePosted = false;
+      attentionExpandQueued = false;
+      beginResize(null);
+      root.classList.add('expanded');
+      summary.setAttribute('aria-expanded', 'true');
       syncPanelAccess();
-      if (expanded) attentionExpandQueued = false;
-      if (model) renderActivities(model);
-      if (!expanded && attentionExpandQueued) {
+      armResizeCompletion();
+    }
+
+    function beginCollapse() {
+      if (closing || !expanded || collapsePending) return;
+      expanded = false;
+      collapsePending = true;
+      collapseCompletePosted = false;
+      attentionExpandQueued = false;
+      beginResize(completeCollapse);
+      root.classList.remove('expanded');
+      summary.setAttribute('aria-expanded', 'false');
+      syncPanelAccess();
+      armResizeCompletion();
+    }
+
+    function finishCollapse() {
+      finishResize();
+      expanded = false;
+      expandPending = false;
+      collapsePending = false;
+      collapseCompletePosted = false;
+      root.classList.remove('expanded');
+      summary.setAttribute('aria-expanded', 'false');
+      syncPanelAccess();
+      if (attentionExpandQueued) {
         attentionExpandQueued = false;
         requestExpand();
       }
     }
 
-    function beginCollapse() {
-      if (!expanded || collapsePending) return;
-      expanded = false;
-      collapsePending = true;
-      attentionExpandQueued = false;
-      root.classList.remove('expanded');
-      summary.setAttribute('aria-expanded', 'false');
-      syncPanelAccess();
-      if (model) renderActivities(model);
-      if (document.hidden) {
-        completeCollapse();
-      } else {
-        collapseTimer = window.setTimeout(completeCollapse, 235);
+    root.addEventListener('transitionend', event => {
+      if (event.target !== root) return;
+      if (closing && event.propertyName === 'opacity') {
+        completeClose();
+      } else if (root.classList.contains('resizing') && event.propertyName === 'height') {
+        finishResize();
       }
-    }
-
-    function finishCollapse() {
-      setExpanded(false);
-    }
+    });
 
     summary.addEventListener('click', event => {
       event.stopPropagation();
-      if (expandPending || collapsePending) return;
+      if (closing || expandPending || collapsePending) return;
       if (expanded) {
         beginCollapse();
       } else {
@@ -777,6 +890,7 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
     filterButtons.forEach(button => {
       button.addEventListener('click', event => {
         event.stopPropagation();
+        if (closing || root.classList.contains('resizing')) return;
         const requested = button.dataset.filter;
         if (!filters.includes(requested) || requested === selectedFilter) return;
         selectedFilter = requested;
@@ -793,7 +907,11 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
 
     document.addEventListener('visibilitychange', syncDocumentVisibility);
     if (typeof reducedMotion.addEventListener === 'function') {
-      reducedMotion.addEventListener('change', syncNeon);
+      reducedMotion.addEventListener('change', () => {
+        if (reducedMotion.matches && root.classList.contains('resizing')) finishResize();
+        if (reducedMotion.matches && closing) completeClose();
+        syncNeon();
+      });
     }
     elapsedTimer = window.setInterval(updateDurations, 1000);
     syncDocumentVisibility();
@@ -803,7 +921,8 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
       disableResult,
       setExpanded,
       beginCollapse,
-      finishCollapse
+      finishCollapse,
+      beginClose
     };
     post('ready');
   })();
