@@ -100,11 +100,15 @@ stays hidden until the first snapshot has been laid out, then the compact island
 eases in from a committed frame. Expansion prepares the transparent native host
 first and leaves the visible geometry to one WebKit timeline; collapse finishes
 that timeline before shrinking the transparent host. Activity rows are not
-rebuilt during either morph, automatic attention expansion waits for opening to
-finish, and closing preserves the current geometry until its longest compositor
-transition completes. A background classification pauses only continuous neon
-work, not bounded lifecycle transitions. Reduced-motion preferences make every
-lifecycle change immediate.
+rebuilt during either morph, and the detail panel remains paint-contained until
+the geometry settles. The compositor is prepared before native growth, while
+continuous neon and blur work pauses for open, resize, and close. Redundant
+native frame updates and unchanged WebView bounds are skipped, so periodic
+recentering does not force an extra page layout. Automatic attention expansion
+waits for opening to finish, and closing preserves even an interrupted resize
+until its longest compositor transition completes. A background classification
+pauses only continuous neon work, not bounded lifecycle transitions.
+Reduced-motion preferences make every lifecycle change immediate.
 
 Control clicks and replies are authorized against the latest sanitized snapshot
 and written as bounded, versioned requests to a private sibling queue. Replies

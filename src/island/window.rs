@@ -292,8 +292,16 @@ pub(crate) fn resize_and_center(window: &Window, size: IslandSize) {
         scale_factor_millis: (monitor.scale_factor() * 1000.0).round().max(1.0) as u32,
     };
     let layout = layout_for_monitor(geometry, size);
-    window.set_inner_size(layout.size);
-    window.set_outer_position(layout.position);
+    if window.inner_size() != layout.size {
+        window.set_inner_size(layout.size);
+    }
+    let position_changed = match window.outer_position() {
+        Ok(position) => position != layout.position,
+        Err(_) => true,
+    };
+    if position_changed {
+        window.set_outer_position(layout.position);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -328,10 +336,18 @@ fn resize_and_center_macos(window: &Window, size: IslandSize) -> bool {
     // status-level island can occupy the physical top edge without size drift.
     let x = screen_frame.origin.x + (screen_frame.size.width - width) / 2.0;
     let y = screen_frame.origin.y + screen_frame.size.height - top_offset - height;
-    ns_window.setFrame_display(
-        NSRect::new(NSPoint::new(x, y), NSSize::new(width, height)),
-        true,
-    );
+    let target = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
+    let current = ns_window.frame();
+    let changed = (current.origin.x - target.origin.x).abs() > 0.25
+        || (current.origin.y - target.origin.y).abs() > 0.25
+        || (current.size.width - target.size.width).abs() > 0.25
+        || (current.size.height - target.size.height).abs() > 0.25;
+    if changed {
+        // Frame mutation is synchronous even when redisplay is deferred.
+        // WebKit can then commit the host and CSS motion in one display pass
+        // instead of forcing a redundant intermediate repaint.
+        ns_window.setFrame_display(target, false);
+    }
     true
 }
 

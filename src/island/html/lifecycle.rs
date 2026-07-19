@@ -15,7 +15,9 @@ pub(super) const ISLAND_LIFECYCLE_SCRIPT: &str = r#"
       const completion = resizeCompletion;
       resizeCompletion = null;
       root.classList.remove('resizing');
+      syncPanelAccess();
       flushPendingActivityRender();
+      syncNeon();
       if (completion) completion();
     }
 
@@ -28,6 +30,8 @@ pub(super) const ISLAND_LIFECYCLE_SCRIPT: &str = r#"
       resizeTimer = 0;
       resizeCompletion = typeof completion === 'function' ? completion : null;
       root.classList.add('resizing');
+      syncPanelAccess();
+      syncNeon();
     }
 
     function armResizeCompletion() {
@@ -65,7 +69,9 @@ pub(super) const ISLAND_LIFECYCLE_SCRIPT: &str = r#"
       openTimer = 0;
       opening = false;
       opened = true;
-      root.classList.remove('booting');
+      root.classList.remove('booting', 'opening');
+      flushPendingActivityRender();
+      syncNeon();
       if (expandAfterOpen) {
         expandAfterOpen = false;
         requestExpand();
@@ -75,6 +81,8 @@ pub(super) const ISLAND_LIFECYCLE_SCRIPT: &str = r#"
     function beginOpen() {
       if (closing || opening || opened) return;
       opening = true;
+      root.classList.add('opening');
+      syncNeon();
       const paint = () => {
         if (!opening || closing) return;
         clearTimeout(openTimer);
@@ -112,9 +120,12 @@ pub(super) const ISLAND_LIFECYCLE_SCRIPT: &str = r#"
       if (!root.classList.contains('resizing')) return;
       const bounds = root.getBoundingClientRect();
       const style = window.getComputedStyle(root);
+      const surfaceStyle = surface ? window.getComputedStyle(surface) : null;
       root.style.width = `${bounds.width}px`;
       root.style.height = `${bounds.height}px`;
       root.style.borderRadius = style.borderRadius;
+      if (surface && surfaceStyle) surface.style.borderRadius = surfaceStyle.borderRadius;
+      root.classList.add('interrupted-resize');
       root.getBoundingClientRect();
     }
 
@@ -150,10 +161,11 @@ pub(super) const ISLAND_LIFECYCLE_SCRIPT: &str = r#"
       // Keep the current compact or expanded geometry stable while closing.
       // Combining a full layout collapse with the compositor fade is both more
       // expensive and visually truncates an expanded island.
-      root.classList.remove('booting', 'resizing');
+      root.classList.remove('booting', 'opening', 'resizing');
       root.classList.add('closing');
       summary.setAttribute('aria-expanded', 'false');
       syncPanelAccess();
+      syncNeon();
       if (reducedMotion.matches) {
         completeClose();
       } else {
@@ -162,7 +174,9 @@ pub(super) const ISLAND_LIFECYCLE_SCRIPT: &str = r#"
     }
 
     function syncPanelAccess() {
-      const accessible = expanded && !closing;
+      const accessible = expanded
+        && !closing
+        && !root.classList.contains('resizing');
       panel.setAttribute('aria-hidden', accessible ? 'false' : 'true');
       if (accessible) {
         panel.removeAttribute('inert');

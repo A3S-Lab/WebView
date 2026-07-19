@@ -14,8 +14,8 @@ pub(super) const ISLAND_STYLE: &str = r#"
     body { user-select: none; -webkit-user-select: none; }
     button { font-family: inherit; }
     #island {
-      --island-resize-duration: 300ms;
-      --island-motion-ease: cubic-bezier(.2,.82,.2,1);
+      --island-resize-duration: 260ms;
+      --island-motion-ease: cubic-bezier(.22,1,.36,1);
       position: absolute;
       top: 32px;
       left: 50%;
@@ -34,8 +34,8 @@ pub(super) const ISLAND_STYLE: &str = r#"
       transition: width var(--island-resize-duration) var(--island-motion-ease),
                   height var(--island-resize-duration) var(--island-motion-ease),
                   border-radius var(--island-resize-duration) var(--island-motion-ease),
-                  opacity 200ms ease-out,
-                  transform 280ms var(--island-motion-ease);
+                  opacity 180ms ease-out,
+                  transform 240ms var(--island-motion-ease);
       contain: layout;
       isolation: isolate;
       backface-visibility: hidden;
@@ -51,6 +51,7 @@ pub(super) const ISLAND_STYLE: &str = r#"
       will-change: width, height, border-radius;
     }
     #island.booting,
+    #island.opening,
     #island.closing {
       will-change: opacity, transform;
     }
@@ -142,10 +143,26 @@ pub(super) const ISLAND_STYLE: &str = r#"
       opacity: .56;
       animation: neon-shift 6.8s linear infinite, aura-breathe 2.35s ease-in-out infinite;
     }
+    #island.booting.active-work,
+    #island.opening.active-work,
     #island.resizing.active-work,
+    #island.closing.active-work,
+    #island.booting.active-work::before,
+    #island.opening.active-work::before,
     #island.resizing.active-work::before,
-    #island.resizing.active-work::after {
+    #island.closing.active-work::before,
+    #island.booting.active-work::after,
+    #island.opening.active-work::after,
+    #island.resizing.active-work::after,
+    #island.closing.active-work::after {
       animation-play-state: paused;
+    }
+    #island.resizing::before,
+    #island.resizing::after,
+    #island.closing.interrupted-resize::before,
+    #island.closing.interrupted-resize::after {
+      opacity: 0 !important;
+      transition: opacity 80ms linear;
     }
     #island.has-attention:not(.active-work) {
       padding: 1.5px;
@@ -189,8 +206,8 @@ pub(super) const ISLAND_STYLE: &str = r#"
       }
     }
     @keyframes halo-breathe {
-      0%, 100% { opacity: .34; filter: blur(8px) saturate(1.2); }
-      50% { opacity: .64; filter: blur(11px) saturate(1.42); }
+      0%, 100% { opacity: .34; transform: scale(.985, .96); }
+      50% { opacity: .64; transform: scale(1, 1); }
     }
     @keyframes aura-breathe {
       0%, 100% { opacity: .38; transform: scale(.96, .9); }
@@ -216,7 +233,11 @@ pub(super) const ISLAND_STYLE: &str = r#"
       border-radius: 28px;
       box-shadow: inset 0 1px rgba(255,255,255,.035);
       transition: border-radius var(--island-resize-duration) var(--island-motion-ease);
+      contain: layout paint style;
+      backface-visibility: hidden;
+      transform: translateZ(0);
     }
+    #island.resizing .surface { will-change: border-radius; }
     #island.expanded .surface { border-radius: 26px; }
     #island.has-attention .surface {
       box-shadow:
@@ -369,15 +390,24 @@ pub(super) const ISLAND_STYLE: &str = r#"
       flex-direction: column;
       padding: 3px 9px 10px;
       opacity: 0;
-      transform: translateY(-5px);
+      transform: translate3d(0, -5px, 0);
       transition: opacity 130ms ease, transform 180ms ease;
+      contain: layout paint style;
+      backface-visibility: hidden;
       pointer-events: none;
     }
-    #island.expanded .panel {
+    #island.expanded:not(.resizing) .panel {
       opacity: 1;
-      transform: translateY(0);
+      transform: translate3d(0, 0, 0);
       pointer-events: auto;
-      transition-delay: 65ms;
+      transition-delay: 25ms;
+    }
+    #island.resizing .panel,
+    #island.closing.interrupted-resize .panel {
+      opacity: 0;
+      transform: translate3d(0, -5px, 0);
+      transition-delay: 0ms;
+      pointer-events: none;
     }
     .rule {
       flex: none;

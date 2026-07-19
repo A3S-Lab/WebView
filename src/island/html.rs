@@ -136,6 +136,7 @@ mod tests {
         let html = html();
         assert!(html.contains("class=\"booting\""));
         assert!(html.contains("#island.booting"));
+        assert!(html.contains("#island.opening"));
         assert!(html.contains("#island.closing"));
         assert!(html.contains("requestAnimationFrame"));
         assert!(html.contains("transitionend"));
@@ -173,6 +174,36 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_motion_prepares_compositor_before_native_resize() {
+        let html = html();
+        let request_expand = html
+            .split_once("function requestExpand")
+            .and_then(|(_, tail)| tail.split_once("function handleAttention"))
+            .map(|(body, _)| body)
+            .expect("requestExpand function");
+        let prepare = request_expand
+            .find("beginResize(null)")
+            .expect("resize preparation");
+        let native_handshake = request_expand
+            .find("post('expand')")
+            .expect("expand handshake");
+        assert!(
+            prepare < native_handshake,
+            "the expensive effects must pause before the native host grows"
+        );
+
+        assert!(html.contains("#island.expanded:not(.resizing) .panel"));
+        assert!(html.contains("!root.classList.contains('resizing')"));
+        assert!(html.contains("contain: layout paint style;"));
+        assert!(html.contains("#island.opening.active-work"));
+        assert!(html.contains("#island.closing.active-work"));
+        assert!(html.contains("#island.resizing::after"));
+        assert!(html.contains("surface.style.borderRadius"));
+        assert!(!html.contains("filter: blur(8px) saturate(1.2);"));
+        assert!(!html.contains("filter: blur(11px) saturate(1.42);"));
+    }
+
+    #[test]
     fn backgrounded_webview_keeps_lifecycle_motion_and_directly_paints_neon() {
         let html = html();
         assert!(html.contains("webview-backgrounded"));
@@ -189,10 +220,15 @@ mod tests {
     #[test]
     fn glow_has_native_bleed_space_and_only_the_inner_surface_clips() {
         let html = html();
+        let island_rule = html
+            .split_once("#island {")
+            .and_then(|(_, tail)| tail.split_once('}'))
+            .map(|(body, _)| body)
+            .expect("base island rule");
         assert!(html.contains("top: 32px"));
         assert!(html.contains("overflow: visible"));
-        assert!(html.contains("contain: layout;"));
-        assert!(!html.contains("contain: layout paint"));
+        assert!(island_rule.contains("contain: layout;"));
+        assert!(!island_rule.contains("contain: layout paint"));
         assert!(html.contains(".surface"));
         assert!(html.contains("overflow: hidden"));
         assert!(html.contains("inset: -30px -46px"));

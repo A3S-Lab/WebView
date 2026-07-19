@@ -4,6 +4,7 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
     const root = document.getElementById('island');
     const summary = document.getElementById('summary');
     const panel = document.getElementById('panel');
+    const surface = root.querySelector('.surface');
     const summaryRobot = document.getElementById('summary-robot');
     const headline = document.getElementById('headline');
     const detail = document.getElementById('detail');
@@ -50,10 +51,10 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
     ];
     const filters = ['all', 'needs_attention', 'running', 'recent'];
     const presentFallbackMs = 80;
-    const openFallbackMs = 360;
+    const openFallbackMs = 320;
     const resizeStartFallbackMs = 80;
-    const resizeFallbackMs = 420;
-    const closeFallbackMs = 360;
+    const resizeFallbackMs = 380;
+    const closeFallbackMs = 320;
     const seenAttentionKeys = new Set();
     const attentionKeyOrder = [];
     const replyDrafts = new Map();
@@ -198,11 +199,22 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
         `0 6px 18px rgba(0,0,0,.36), 0 0 ${7 + wave * 4}px rgba(77,181,255,${.38 + wave * .38}), 0 0 ${14 + wave * 4}px rgba(88,101,255,${.24 + wave * .26}), 0 0 ${20 + wave * 4}px rgba(224,73,255,${.12 + wave * .13})`;
     }
 
+    function lifecycleMotionActive() {
+      return opening
+        || closing
+        || root.classList.contains('booting')
+        || root.classList.contains('resizing');
+    }
+
     function syncNeon() {
       stopNeonTimer();
       root.style.removeProperty('background-position');
       root.style.removeProperty('box-shadow');
-      if (!root.classList.contains('active-work') || reducedMotion.matches) return;
+      if (
+        !root.classList.contains('active-work')
+        || reducedMotion.matches
+        || lifecycleMotionActive()
+      ) return;
       if (document.hidden) {
         paintHiddenNeon();
         neonTimer = window.setInterval(paintHiddenNeon, 180);
@@ -670,6 +682,9 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
         return;
       }
       expandPending = true;
+      // Promote and quiet the visible layers before Rust grows the native
+      // host. Otherwise the first host frame can rerasterize an animated blur.
+      beginResize(null);
       post('expand');
     }
 
@@ -701,7 +716,7 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
         `${data.status || 'Idle'}. ${metrics.running} running, ${metrics.total} total. Show agent activity`
       );
       handleAttention(data);
-      if (root.classList.contains('resizing') || closing) {
+      if (root.classList.contains('resizing') || opening || closing) {
         pendingActivityRender = true;
       } else {
         renderActivities(data);

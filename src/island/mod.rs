@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use tao::dpi::PhysicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use wry::{BackgroundThrottlingPolicy, WebViewBuilder};
@@ -120,7 +121,8 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
     // Wry may adjust its host frame while attaching WKWebView. Reassert the
     // exact physical top-center frame after attachment and before first show.
     window::resize_and_center(&window, IslandSize::Collapsed);
-    sync_webview_bounds(&webview, &window)?;
+    let mut webview_bounds = None;
+    sync_webview_bounds(&webview, &window, &mut webview_bounds)?;
     window::configure_native_window(&window, false)?;
 
     let started = Instant::now();
@@ -171,8 +173,9 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                 // mismatched curves and intermittent clipping.
                 window::resize_and_center(&window, IslandSize::Expanded);
                 next_recenter = now + RECENTER_INTERVAL;
-                if let Err(error) = sync_webview_bounds_after_native_resize(&webview, &window)
-                    .and_then(|()| window::configure_native_window(&window, true))
+                if let Err(error) =
+                    sync_webview_bounds_after_native_resize(&webview, &window, &mut webview_bounds)
+                        .and_then(|()| window::configure_native_window(&window, true))
                 {
                     eprintln!("a3s-webview: agent island: {error}");
                     *control_flow = ControlFlow::Exit;
@@ -190,8 +193,12 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                     expanded = false;
                     window::resize_and_center(&window, IslandSize::Collapsed);
                     next_recenter = now + RECENTER_INTERVAL;
-                    if let Err(error) = sync_webview_bounds_after_native_resize(&webview, &window)
-                        .and_then(|()| window::configure_native_window(&window, false))
+                    if let Err(error) = sync_webview_bounds_after_native_resize(
+                        &webview,
+                        &window,
+                        &mut webview_bounds,
+                    )
+                    .and_then(|()| window::configure_native_window(&window, false))
                     {
                         eprintln!("a3s-webview: agent island: {error}");
                         *control_flow = ControlFlow::Exit;
@@ -316,7 +323,8 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                             IslandSize::Collapsed
                         },
                     );
-                    if let Err(error) = sync_webview_bounds(&webview, &window) {
+                    if let Err(error) = sync_webview_bounds(&webview, &window, &mut webview_bounds)
+                    {
                         eprintln!("a3s-webview: agent island: {error}");
                         *control_flow = ControlFlow::Exit;
                         return;
@@ -396,10 +404,12 @@ fn configure_webview_resize_behavior(_webview: &wry::WebView) {}
 #[cfg(target_os = "macos")]
 fn sync_webview_bounds_after_native_resize(
     _webview: &wry::WebView,
-    _window: &tao::window::Window,
+    window: &tao::window::Window,
+    current: &mut Option<PhysicalSize<u32>>,
 ) -> Result<(), String> {
     // The autoresizing child has already followed AppKit's synchronous host
     // resize. A second explicit set_bounds would trigger redundant layout.
+    *current = Some(window.inner_size());
     Ok(())
 }
 
@@ -407,18 +417,28 @@ fn sync_webview_bounds_after_native_resize(
 fn sync_webview_bounds_after_native_resize(
     webview: &wry::WebView,
     window: &tao::window::Window,
+    current: &mut Option<PhysicalSize<u32>>,
 ) -> Result<(), String> {
-    sync_webview_bounds(webview, window)
+    sync_webview_bounds(webview, window, current)
 }
 
-fn sync_webview_bounds(webview: &wry::WebView, window: &tao::window::Window) -> Result<(), String> {
+fn sync_webview_bounds(
+    webview: &wry::WebView,
+    window: &tao::window::Window,
+    current: &mut Option<PhysicalSize<u32>>,
+) -> Result<(), String> {
     let size = window.inner_size();
+    if *current == Some(size) {
+        return Ok(());
+    }
     webview
         .set_bounds(wry::Rect {
             position: tao::dpi::PhysicalPosition::new(0, 0).into(),
             size: size.into(),
         })
-        .map_err(|error| format!("resize agent island webview: {error}"))
+        .map_err(|error| format!("resize agent island webview: {error}"))?;
+    *current = Some(size);
+    Ok(())
 }
 
 fn begin_close_animation(webview: &wry::WebView, now: Instant) -> Result<Instant, String> {
