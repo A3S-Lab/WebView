@@ -137,6 +137,8 @@ never appears in `argv` / `ps`).
 
 Release workflows build all CLI targets. Where the helper is not installed,
 RemoteUI degrades to the system browser and Agent Island startup is skipped.
+Every pull request runs strict Clippy and the full test suite natively on Linux,
+macOS, and Windows; Linux also verifies formatting, rustdoc, and package contents.
 
 ## License
 
