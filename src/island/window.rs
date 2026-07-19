@@ -2,10 +2,12 @@ use tao::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use tao::event_loop::{EventLoop, EventLoopWindowTarget};
 use tao::window::{Window, WindowBuilder};
 
-pub(crate) const COLLAPSED_WIDTH: f64 = 296.0;
-pub(crate) const COLLAPSED_HEIGHT: f64 = 44.0;
+pub(crate) const COLLAPSED_WIDTH: f64 = 392.0;
+pub(crate) const COLLAPSED_HEIGHT: f64 = 60.0;
 pub(crate) const EXPANDED_WIDTH: f64 = 560.0;
 pub(crate) const EXPANDED_HEIGHT: f64 = 360.0;
+pub(crate) const HORIZONTAL_GLOW_INSET: f64 = 48.0;
+pub(crate) const VERTICAL_GLOW_INSET: f64 = 32.0;
 const TOP_MARGIN: f64 = 6.0;
 const SCREEN_INSET: f64 = 8.0;
 
@@ -17,10 +19,14 @@ pub(crate) enum IslandSize {
 
 impl IslandSize {
     fn logical_size(self) -> LogicalSize<f64> {
-        match self {
+        let surface = match self {
             Self::Collapsed => LogicalSize::new(COLLAPSED_WIDTH, COLLAPSED_HEIGHT),
             Self::Expanded => LogicalSize::new(EXPANDED_WIDTH, EXPANDED_HEIGHT),
-        }
+        };
+        LogicalSize::new(
+            surface.width + HORIZONTAL_GLOW_INSET * 2.0,
+            surface.height + VERTICAL_GLOW_INSET * 2.0,
+        )
     }
 }
 
@@ -106,10 +112,10 @@ fn platform_builder(builder: WindowBuilder) -> WindowBuilder {
     builder
 }
 
-pub(crate) fn configure_native_window(window: &Window) -> Result<(), String> {
+pub(crate) fn configure_native_window(window: &Window, interactive: bool) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     window.set_always_on_top(true);
-    window.set_focusable(false);
+    window.set_focusable(interactive);
 
     #[cfg(target_os = "macos")]
     unsafe {
@@ -148,11 +154,12 @@ pub(crate) fn configure_native_window(window: &Window) -> Result<(), String> {
 
         let hwnd = window.hwnd() as *mut core::ffi::c_void;
         let styles = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
-        let _ = SetWindowLongPtrW(
-            hwnd,
-            GWL_EXSTYLE,
-            ((styles & !WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) as isize,
-        );
+        let styles = if interactive {
+            ((styles & !WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW) & !WS_EX_NOACTIVATE
+        } else {
+            (styles & !WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+        };
+        let _ = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, styles as isize);
         let _ = SetWindowPos(
             hwnd,
             HWND_TOPMOST,
@@ -310,16 +317,17 @@ fn resize_and_center_macos(window: &Window, size: IslandSize) -> bool {
     let width = requested
         .width
         .min((screen_frame.size.width - SCREEN_INSET * 2.0).max(1.0));
+    let top_offset = TOP_MARGIN - VERTICAL_GLOW_INSET;
     let height = requested
         .height
-        .min((screen_frame.size.height - TOP_MARGIN - SCREEN_INSET).max(1.0));
+        .min((screen_frame.size.height - top_offset - SCREEN_INSET).max(1.0));
 
     // Tao dispatches setContentSize/setFrameTopLeftPoint asynchronously and
     // AppKit constrains the latter to visibleFrame (below the menu bar). Apply
     // the complete borderless frame synchronously against NSScreen.frame so a
     // status-level island can occupy the physical top edge without size drift.
     let x = screen_frame.origin.x + (screen_frame.size.width - width) / 2.0;
-    let y = screen_frame.origin.y + screen_frame.size.height - TOP_MARGIN - height;
+    let y = screen_frame.origin.y + screen_frame.size.height - top_offset - height;
     ns_window.setFrame_display(
         NSRect::new(NSPoint::new(x, y), NSSize::new(width, height)),
         true,
@@ -331,15 +339,15 @@ fn layout_for_monitor(monitor: MonitorGeometry, requested: IslandSize) -> Window
     let scale = monitor.scale_factor().max(0.001);
     let requested = requested.logical_size();
     let max_width = (f64::from(monitor.size.width) / scale - SCREEN_INSET * 2.0).max(1.0);
-    let max_height = (f64::from(monitor.size.height) / scale - TOP_MARGIN - SCREEN_INSET).max(1.0);
+    let top_offset = TOP_MARGIN - VERTICAL_GLOW_INSET;
+    let max_height = (f64::from(monitor.size.height) / scale - top_offset - SCREEN_INSET).max(1.0);
     let logical_width = requested.width.min(max_width);
     let logical_height = requested.height.min(max_height);
     let width = (logical_width * scale).round().max(1.0) as u32;
     let height = (logical_height * scale).round().max(1.0) as u32;
     let x_offset = (i64::from(monitor.size.width) - i64::from(width)) / 2;
     let x = i64::from(monitor.position.x).saturating_add(x_offset);
-    let y =
-        i64::from(monitor.position.y).saturating_add((TOP_MARGIN * scale).round().max(0.0) as i64);
+    let y = i64::from(monitor.position.y).saturating_add((top_offset * scale).round() as i64);
     WindowLayout {
         position: PhysicalPosition::new(
             x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
@@ -374,8 +382,8 @@ mod tests {
             },
             IslandSize::Collapsed,
         );
-        assert_eq!(layout.size, PhysicalSize::new(592, 88));
-        assert_eq!(layout.position, PhysicalPosition::new(1216, 12));
+        assert_eq!(layout.size, PhysicalSize::new(976, 248));
+        assert_eq!(layout.position, PhysicalPosition::new(1024, -52));
     }
 
     #[test]
@@ -388,8 +396,8 @@ mod tests {
             },
             IslandSize::Expanded,
         );
-        assert_eq!(layout.size, PhysicalSize::new(560, 360));
-        assert_eq!(layout.position, PhysicalPosition::new(-1240, -114));
+        assert_eq!(layout.size, PhysicalSize::new(656, 424));
+        assert_eq!(layout.position, PhysicalPosition::new(-1288, -146));
     }
 
     #[test]
@@ -403,7 +411,16 @@ mod tests {
             IslandSize::Expanded,
         );
         assert!(layout.size.width <= 180);
-        assert!(layout.size.height <= 83);
+        assert!(layout.size.height <= 123);
         assert!(layout.position.x >= 50);
+    }
+
+    #[test]
+    fn glow_bleed_contains_the_collapsed_aura_before_native_clipping() {
+        let size = IslandSize::Collapsed.logical_size();
+
+        assert_eq!(size, LogicalSize::new(488.0, 124.0));
+        assert!(HORIZONTAL_GLOW_INSET >= 46.0);
+        assert!(VERTICAL_GLOW_INSET >= 30.0);
     }
 }

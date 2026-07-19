@@ -17,6 +17,7 @@ const MAX_ID_CHARS: usize = 160;
 const MAX_AGENT_CHARS: usize = 64;
 const MAX_WORKSPACE_CHARS: usize = 128;
 const MAX_TASK_CHARS: usize = 240;
+const MAX_REASON_CHARS: usize = 240;
 const MAX_CONTROL_ACTIONS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,6 +159,8 @@ pub(crate) struct Activity {
     #[serde(default)]
     pub(crate) task: Option<String>,
     #[serde(default)]
+    pub(crate) reason: Option<String>,
+    #[serde(default)]
     pub(crate) state: AgentState,
     #[serde(default)]
     pub(crate) confidence: AgentConfidence,
@@ -186,6 +189,7 @@ impl Activity {
         }
         self.workspace = sanitize_optional(self.workspace, MAX_WORKSPACE_CHARS);
         self.task = sanitize_optional(self.task, MAX_TASK_CHARS);
+        self.reason = sanitize_optional(self.reason, MAX_REASON_CHARS);
         let latest_time = now_ms.saturating_add(SNAPSHOT_FUTURE_SKEW_MS);
         self.started_at_ms = self.started_at_ms.filter(|started| *started <= latest_time);
         self.finished_at_ms = self
@@ -212,6 +216,9 @@ impl Activity {
     }
 
     fn categories(&self) -> Vec<ActivityCategory> {
+        if self.confidence == AgentConfidence::Process {
+            return vec![ActivityCategory::Running];
+        }
         if self.confidence != AgentConfidence::Exact {
             return Vec::new();
         }
@@ -282,17 +289,19 @@ impl Snapshot {
     pub(crate) fn render_json(&self) -> Result<String, String> {
         let primary = self.activities.iter().min_by_key(|activity| {
             (
-                activity.confidence.evidence_rank(),
                 activity.state.attention_rank(),
+                activity.confidence.evidence_rank(),
             )
         });
         let (headline, detail) = presentation_text(self.activities.len(), primary);
         let primary_status = primary
             .map(|activity| activity.state.presentation())
-            .unwrap_or_else(|| AgentState::Unknown.presentation());
+            .unwrap_or_else(|| AgentState::Idle.presentation());
         let primary_vendor = primary.map_or(AgentVendor::Other, |activity| activity.vendor);
         let active_work = self.activities.iter().any(|activity| {
-            activity.confidence == AgentConfidence::Exact && activity.state.is_active_work()
+            activity.confidence == AgentConfidence::Process
+                || (activity.confidence == AgentConfidence::Exact
+                    && activity.state.is_active_work())
         });
         let metrics = RenderMetrics::from_activities(&self.activities);
         let attention_keys = attention_keys(&self.activities);
@@ -307,6 +316,7 @@ impl Snapshot {
                     agent: &activity.agent,
                     workspace: activity.workspace.as_deref(),
                     task: activity.task.as_deref(),
+                    reason: activity.reason.as_deref(),
                     state: activity.state,
                     vendor: activity.vendor,
                     status: status.label,
@@ -338,9 +348,13 @@ impl Snapshot {
             degraded: self.degraded,
             headline,
             detail,
+            primary_agent: primary.map(|activity| activity.agent.as_str()),
+            status: primary_status.label,
             tone: primary_status.tone,
             glyph: primary_status.glyph,
             vendor: primary_vendor,
+            primary_started_at_ms: primary.and_then(|activity| activity.started_at_ms),
+            primary_finished_at_ms: primary.and_then(|activity| activity.finished_at_ms),
             active_work,
             metrics,
             attention_keys,
@@ -349,9 +363,11 @@ impl Snapshot {
         .map_err(|error| format!("serialize island snapshot: {error}"))
     }
 
-    pub(crate) fn has_exact_lifecycle(&self) -> bool {
+    pub(crate) fn has_visible_activity(&self) -> bool {
         self.activities.iter().any(|activity| {
-            activity.confidence == AgentConfidence::Exact && activity.state.keeps_island_visible()
+            activity.confidence == AgentConfidence::Process
+                || (activity.confidence == AgentConfidence::Exact
+                    && activity.state.keeps_island_visible())
         })
     }
 
@@ -376,6 +392,7 @@ impl Snapshot {
         Some(AuthorizedControl {
             activity_id: activity.id.clone(),
             action: control.action,
+            message: submission.message.clone(),
             token: control.token.clone(),
             target_instance_id: control.target_instance_id.clone(),
             expires_at_ms: control.expires_at_ms,
@@ -399,9 +416,13 @@ struct RenderSnapshot<'a> {
     degraded: bool,
     headline: String,
     detail: String,
+    primary_agent: Option<&'a str>,
+    status: &'static str,
     tone: &'static str,
     glyph: &'static str,
     vendor: AgentVendor,
+    primary_started_at_ms: Option<u64>,
+    primary_finished_at_ms: Option<u64>,
     active_work: bool,
     metrics: RenderMetrics,
     attention_keys: Vec<String>,
@@ -446,6 +467,7 @@ struct RenderActivity<'a> {
     agent: &'a str,
     workspace: Option<&'a str>,
     task: Option<&'a str>,
+    reason: Option<&'a str>,
     state: AgentState,
     vendor: AgentVendor,
     status: &'static str,
@@ -776,6 +798,10 @@ mod tests {
         let rendered: serde_json::Value =
             serde_json::from_str(&snapshot.render_json().unwrap()).unwrap();
         assert_eq!(rendered["headline"], "Ship it");
+        assert_eq!(rendered["primary_agent"], "a3s-code");
+        assert_eq!(rendered["status"], "Completed");
+        assert!(rendered["primary_started_at_ms"].is_null());
+        assert_eq!(rendered["primary_finished_at_ms"], 10_000);
         assert_eq!(rendered["activities"][0]["status"], "Completed");
         assert_eq!(rendered["activities"][0]["tone"], "success");
     }
@@ -805,6 +831,10 @@ mod tests {
 
         assert_eq!(rendered["active_work"], true);
         assert_eq!(rendered["vendor"], "open_ai");
+        assert_eq!(rendered["primary_agent"], "a3s-code");
+        assert_eq!(rendered["status"], "Working");
+        assert_eq!(rendered["primary_started_at_ms"], 4_000);
+        assert!(rendered["primary_finished_at_ms"].is_null());
         assert_eq!(rendered["activities"][0]["started_at_ms"], 4_000);
         assert_eq!(rendered["activities"][0]["vendor"], "open_ai");
         assert_eq!(rendered["activities"][0]["controls"][0]["action"], "stop");
@@ -813,6 +843,7 @@ mod tests {
         let submission = ControlSubmission {
             activity_id: "parent".to_string(),
             action: AgentControlActionKind::Stop,
+            message: None,
             token: "0123456789abcdef0123456789abcdef".to_string(),
             target_instance_id: "parent".to_string(),
         };
@@ -838,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_terminal_lifecycle_outranks_process_detection() {
+    fn a_live_external_process_outranks_a_retained_terminal_outcome() {
         let bytes = snapshot_json(
             10_000,
             r#"[{"id":"process","agent":"codex","task":"active process","state":"unknown","confidence":"process"},{"id":"exact","agent":"a3s-code","task":"Task complete","state":"completed","confidence":"exact"}]"#,
@@ -847,21 +878,21 @@ mod tests {
         let rendered: serde_json::Value =
             serde_json::from_str(&snapshot.render_json().unwrap()).unwrap();
 
-        assert_eq!(rendered["headline"], "2 agents · Completed");
-        assert_eq!(rendered["detail"], "Task complete");
-        assert_eq!(rendered["tone"], "success");
-        assert!(snapshot.has_exact_lifecycle());
+        assert_eq!(rendered["headline"], "2 agents · Process detected");
+        assert_eq!(rendered["detail"], "active process");
+        assert_eq!(rendered["tone"], "inferred");
+        assert!(snapshot.has_visible_activity());
     }
 
     #[test]
-    fn idle_and_process_only_rows_do_not_keep_the_island_visible() {
+    fn a_detected_process_keeps_the_island_visible_when_a3s_is_idle() {
         let bytes = snapshot_json(
             10_000,
             r#"[{"id":"idle","agent":"a3s-code","state":"idle","confidence":"exact"},{"id":"process","agent":"codex","state":"unknown","confidence":"process"}]"#,
         );
         let snapshot = Snapshot::parse(&bytes, 10_000).unwrap();
 
-        assert!(!snapshot.has_exact_lifecycle());
+        assert!(snapshot.has_visible_activity());
     }
 
     #[cfg(unix)]

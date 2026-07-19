@@ -9,12 +9,14 @@ use serde::{Deserialize, Serialize};
 
 const CONTROL_REQUEST_SCHEMA: &str = "a3s.agent_control_request.v1";
 const CONTROL_REQUEST_DIRECTORY: &str = "control-requests";
-const MAX_IPC_BYTES: usize = 2 * 1024;
+const MAX_IPC_BYTES: usize = 6 * 1024;
 const MAX_ACTIVITY_ID_CHARS: usize = 160;
 const MAX_INSTANCE_ID_CHARS: usize = 160;
 const CONTROL_TOKEN_HEX_CHARS: usize = 32;
 const MAX_REQUEST_BYTES: usize = 8 * 1024;
 const MAX_CONTROL_FUTURE_MS: u64 = 17_000;
+pub(crate) const MAX_REPLY_CHARS: usize = 1_000;
+const MAX_REPLY_BYTES: usize = 4 * 1024;
 
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -26,6 +28,7 @@ pub(crate) enum AgentControlActionKind {
     Deny,
     Stop,
     Cancel,
+    Reply,
     #[default]
     #[serde(other)]
     Unknown,
@@ -43,6 +46,7 @@ impl AgentControlActionKind {
             Self::Deny => "Deny",
             Self::Stop => "Stop",
             Self::Cancel => "Cancel",
+            Self::Reply => "Reply",
             Self::Unknown => "Unavailable",
         }
     }
@@ -52,6 +56,7 @@ impl AgentControlActionKind {
             Self::ApproveOnce => "allow",
             Self::ApproveAlways => "always",
             Self::Deny | Self::Stop | Self::Cancel => "destructive",
+            Self::Reply => "reply",
             Self::Unknown => "muted",
         }
     }
@@ -84,6 +89,7 @@ impl ControlDescriptor {
 pub(crate) struct ControlSubmission {
     pub(crate) activity_id: String,
     pub(crate) action: AgentControlActionKind,
+    pub(crate) message: Option<String>,
     pub(crate) token: String,
     pub(crate) target_instance_id: String,
 }
@@ -94,6 +100,8 @@ struct ControlIpcMessage {
     message_type: String,
     activity_id: String,
     action: AgentControlActionKind,
+    #[serde(default)]
+    message: Option<String>,
     token: String,
     target_instance_id: String,
 }
@@ -103,6 +111,11 @@ pub(crate) fn parse_submission(body: &str) -> Option<ControlSubmission> {
         return None;
     }
     let message: ControlIpcMessage = serde_json::from_str(body).ok()?;
+    let reply = match message.action {
+        AgentControlActionKind::Reply => sanitize_reply(message.message)?,
+        _ if message.message.is_none() => None,
+        _ => return None,
+    };
     if message.message_type != "control"
         || !message.action.is_supported()
         || !valid_identifier(&message.activity_id, MAX_ACTIVITY_ID_CHARS)
@@ -114,6 +127,7 @@ pub(crate) fn parse_submission(body: &str) -> Option<ControlSubmission> {
     Some(ControlSubmission {
         activity_id: message.activity_id,
         action: message.action,
+        message: reply,
         token: message.token,
         target_instance_id: message.target_instance_id,
     })
@@ -123,6 +137,7 @@ pub(crate) fn parse_submission(body: &str) -> Option<ControlSubmission> {
 pub(crate) struct AuthorizedControl {
     pub(crate) activity_id: String,
     pub(crate) action: AgentControlActionKind,
+    pub(crate) message: Option<String>,
     pub(crate) token: String,
     pub(crate) target_instance_id: String,
     pub(crate) expires_at_ms: u64,
@@ -135,6 +150,8 @@ struct ControlProtocolRequest<'a> {
     target_instance_id: &'a str,
     activity_id: &'a str,
     action: AgentControlActionKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<&'a str>,
     token: &'a str,
     created_at_ms: u64,
     expires_at_ms: u64,
@@ -174,6 +191,7 @@ impl ControlQueue {
             target_instance_id: &control.target_instance_id,
             activity_id: &control.activity_id,
             action: control.action,
+            message: control.message.as_deref(),
             token: &control.token,
             created_at_ms: now_ms,
             expires_at_ms: control.expires_at_ms,
@@ -238,6 +256,29 @@ fn valid_token(token: &str) -> bool {
     token.len() == CONTROL_TOKEN_HEX_CHARS && token.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn sanitize_reply(message: Option<String>) -> Option<Option<String>> {
+    let message = message?;
+    let trimmed = message.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_REPLY_BYTES
+        || trimmed.chars().count() > MAX_REPLY_CHARS
+        || trimmed.chars().any(|character| {
+            (character.is_control() && !matches!(character, '\n' | '\t'))
+                || matches!(
+                    character,
+                    '\u{061c}'
+                        | '\u{200e}'
+                        | '\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{206f}'
+                )
+        })
+    {
+        return None;
+    }
+    Some(Some(trimmed.to_string()))
+}
+
 #[cfg(unix)]
 fn ensure_private_directory(path: &Path) -> Result<(), String> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -300,12 +341,29 @@ mod tests {
     }
 
     #[test]
+    fn ipc_accepts_a_bounded_reply_and_rejects_missing_or_oversized_text() {
+        let reply = r#"{"type":"control","activity_id":"instance","action":"reply","message":"Use the safer path.","token":"0123456789abcdef0123456789abcdef","target_instance_id":"instance"}"#;
+        let submission = parse_submission(reply).unwrap();
+        assert_eq!(submission.action, AgentControlActionKind::Reply);
+        assert_eq!(submission.message.as_deref(), Some("Use the safer path."));
+
+        let missing = r#"{"type":"control","activity_id":"instance","action":"reply","token":"0123456789abcdef0123456789abcdef","target_instance_id":"instance"}"#;
+        assert!(parse_submission(missing).is_none());
+        let oversized = format!(
+            r#"{{"type":"control","activity_id":"instance","action":"reply","message":"{}","token":"0123456789abcdef0123456789abcdef","target_instance_id":"instance"}}"#,
+            "x".repeat(MAX_REPLY_CHARS + 1)
+        );
+        assert!(parse_submission(&oversized).is_none());
+    }
+
+    #[test]
     fn queue_publishes_one_private_versioned_request() {
         let directory = temp_dir();
         let queue = ControlQueue::for_snapshot(&directory.join("system-snapshot.json")).unwrap();
         let control = AuthorizedControl {
             activity_id: "instance:child".to_string(),
             action: AgentControlActionKind::Cancel,
+            message: None,
             token: "0123456789abcdef0123456789abcdef".to_string(),
             target_instance_id: "instance".to_string(),
             expires_at_ms: 11_000,
@@ -323,6 +381,7 @@ mod tests {
         assert_eq!(value["schema"], CONTROL_REQUEST_SCHEMA);
         assert_eq!(value["action"], "cancel");
         assert_eq!(value["target_instance_id"], "instance");
+        assert!(value.get("message").is_none());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

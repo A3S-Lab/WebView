@@ -40,17 +40,26 @@ a3s-webview --agent-island --snapshot <absolute-path> --lock-file <absolute-path
 - `--no-auth` — don't seed any auth token.
 - `--agent-island` — render the private system-agent snapshot in a separate,
   frameless OS window. Snapshot and lock paths must be absolute siblings in one
-  private per-user directory. The lock admits only one island process. A fresh
-  snapshot without any exact non-idle A3S lifecycle closes the helper; inferred
-  process rows do not keep an otherwise idle island alive.
+  private per-user directory. The shared advisory lock admits only one island
+  process for the current user, even when multiple TUI publishers request it. A
+  fresh snapshot without an exact non-idle A3S lifecycle or recognized
+  coding-agent process closes the helper; fresh process rows trigger and keep
+  the island alive.
 
 ## Agent Island UI
 
 The island is implemented by this standalone Tao/Wry helper. It embeds offline
 HTML, CSS, and JavaScript in the platform WebView; it does not render through
-`a3s-tui`, the A3S GUI crate, React, or Next.js. The compact `296 × 44` pill
-expands to a bounded, scrollable `560 × 360` detail view without taking keyboard
-focus.
+`a3s-tui`, the A3S GUI crate, React, or Next.js. The compact `392 × 60` pill
+expands to a bounded, scrollable `560 × 360` detail surface. Its transparent
+native window adds 48 logical pixels of horizontal and 32 pixels of vertical
+bleed on every side (`488 × 124` collapsed and `656 × 424` expanded). The
+wide aura fades to transparent inside that bleed instead of exposing the
+native window's rectangular clipping boundary. The collapsed surface shows
+the primary agent, task context, state, live elapsed time, running/total
+counts, and needs-you count. Automatic attention expansion does not steal
+keyboard focus; the expanded window becomes focusable so a user can operate
+controls and type a reply directly in the island.
 
 The user preference defaults to enabled and is persisted by A3S Code.
 `/island on|off|status` controls it from the TUI. The expanded view also offers
@@ -60,18 +69,20 @@ exits; `/island on` restores the surface.
 Each row uses original robot geometry with a color palette derived from the
 agent vendor, not a copied logo or mascot. Exact lifecycle rows show agent,
 task, state, workspace, and elapsed time; terminal durations freeze at the
-reported finish time. Live grants add only the controls the owning TUI can
-currently execute: `Allow` / `Always` / `Deny` for approval, `Stop` for the
-parent stream, and `Cancel` for a running child. Inferred process rows never
-receive controls.
+reported finish time. An approval row displays its sanitized, bounded reason
+and uses larger `Allow` / `Always` / `Deny` buttons. Live grants add only the
+controls the owning TUI can currently execute: approval actions, `Stop` for the
+parent stream, `Cancel` for a running child, and a direct reply composer on an
+eligible exact parent row. Inferred process rows never receive controls.
 
 The detail view is an attention workbench with live `All`, `Needs you`,
 `Running`, and `Recent` counts. `Needs you` covers approval waits, input waits,
 and failures; `Recent` covers completed, failed, and cancelled outcomes, so a
 failure intentionally belongs to both. Filtering a child retains its parent as
 labeled context, and each parent reports settled direct children against its
-total. Process-only evidence remains available under `All` but is never counted
-as running.
+total. Process-only evidence remains explicitly inferred under `All` and also
+appears under `Running` because a recognized process is live running evidence;
+it never masquerades as authoritative lifecycle state.
 
 Each previously unseen actionable approval or input identity selects
 `Needs you` and expands the island once without activating it. Continued
@@ -79,16 +90,19 @@ heartbeats with the same control token do not reopen it after a manual collapse,
 and a later new request does. Manual filter choices remain stable until a new
 attention identity arrives.
 
-Any exact `planning` or `working` row enables the animated multicolor neon
-border. Reduced-motion mode keeps a static color border, and backgrounded
-WebViews receive a low-frequency direct repaint so WebKit timer throttling does
-not freeze the breathing effect.
+Any exact `planning` / `working` row or recognized coding-agent process enables
+the animated, multilayer multicolor neon border. Reduced-motion mode keeps a
+static color border, and backgrounded WebViews receive a low-frequency direct
+repaint so WebKit timer throttling does not freeze the breathing effect.
 
-Control clicks are authorized against the latest sanitized snapshot and written
-as bounded, versioned requests to a private sibling queue. On Unix the queue is
-`0700` and request files are `0600`. The target TUI revalidates the short-lived,
-one-shot grant against its current session, activity, and tool/task context
-before using the existing approval, interruption, or child-cancellation path.
+Control clicks and replies are authorized against the latest sanitized snapshot
+and written as bounded, versioned requests to a private sibling queue. Replies
+are limited to 1,000 characters / 4 KiB; `Enter` sends and `Shift+Enter` inserts
+a newline. During approval, a reply queues a normal follow-up and does not
+implicitly approve or deny. On Unix the queue is `0700` and request files are
+`0600`. The target TUI revalidates the short-lived, one-shot grant against its
+current session, activity, and tool/task context before using the existing
+submission, approval, interruption, or child-cancellation path.
 
 ## Auth
 
@@ -104,7 +118,7 @@ never appears in `argv` / `ps`).
 |---|---|---|
 | macOS | WKWebView | System framework; native island joins Spaces and full-screen auxiliary windows without entering the Dock. |
 | Linux | WebKitGTK | Needs `libwebkit2gtk-4.1`; X11 supports top-center/keep-above hints. Standard Wayland may ignore global placement. |
-| Windows | WebView2 | Runtime ships with supported Windows releases; the island uses a non-activating tool window outside the taskbar and Alt-Tab list. |
+| Windows | WebView2 | Runtime ships with supported Windows releases; the island stays outside the taskbar and Alt-Tab list, remains non-activating while collapsed, and accepts focus when expanded for direct interaction. |
 
 Release workflows build all CLI targets. Where the helper is not installed,
 RemoteUI degrades to the system browser and Agent Island startup is skipped.

@@ -14,24 +14,84 @@ pub(super) const ISLAND_STYLE: &str = r#"
     body { user-select: none; -webkit-user-select: none; }
     button { font-family: inherit; }
     #island {
+      --island-radius: 30px;
       position: absolute;
-      top: 0;
+      top: 32px;
       left: 50%;
-      width: 296px;
-      height: 44px;
+      width: 392px;
+      height: 60px;
       padding: 1px;
       transform: translateX(-50%);
-      overflow: hidden;
+      overflow: visible;
       color: rgba(255,255,255,.96);
       background: rgba(255,255,255,.105);
-      border-radius: 24px;
-      box-shadow: 0 8px 28px rgba(0,0,0,.34);
+      border-radius: var(--island-radius);
+      box-shadow: 0 6px 18px rgba(0,0,0,.34);
       cursor: default;
       transition: width 220ms cubic-bezier(.2,.84,.2,1),
                   height 220ms cubic-bezier(.2,.84,.2,1),
                   border-radius 220ms ease;
-      contain: layout paint;
+      contain: layout;
       isolation: isolate;
+      z-index: 0;
+    }
+    #island::before,
+    #island::after {
+      content: "";
+      position: absolute;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 180ms ease, transform 220ms ease;
+    }
+    #island::before {
+      z-index: -1;
+      inset: -7px;
+      border-radius: calc(var(--island-radius) + 7px);
+      background: linear-gradient(
+        115deg,
+        #38d8ff,
+        #5865ff,
+        #bd4dff,
+        #ff4f9a,
+        #ffb340,
+        #39e6b1,
+        #38d8ff
+      );
+      background-size: 320% 320%;
+      filter: blur(9px) saturate(1.3);
+    }
+    #island::after {
+      z-index: -2;
+      inset: -30px -46px;
+      border-radius: 999px;
+      background: linear-gradient(
+        115deg,
+        rgba(56,216,255,.68),
+        rgba(88,101,255,.62),
+        rgba(189,77,255,.58),
+        rgba(255,79,154,.56),
+        rgba(255,179,64,.5),
+        rgba(57,230,177,.56),
+        rgba(56,216,255,.68)
+      );
+      background-size: 240% 240%;
+      -webkit-mask-image: radial-gradient(
+        ellipse at center,
+        #000 0%,
+        rgba(0,0,0,.96) 34%,
+        rgba(0,0,0,.48) 54%,
+        transparent 78%
+      );
+      mask-image: radial-gradient(
+        ellipse at center,
+        #000 0%,
+        rgba(0,0,0,.96) 34%,
+        rgba(0,0,0,.48) 54%,
+        transparent 78%
+      );
+      -webkit-mask-repeat: no-repeat;
+      mask-repeat: no-repeat;
+      transform: scale(.96, .9);
     }
     #island.active-work {
       padding: 1.5px;
@@ -47,17 +107,39 @@ pub(super) const ISLAND_STYLE: &str = r#"
       );
       background-size: 320% 320%;
       box-shadow:
-        0 8px 28px rgba(0,0,0,.36),
-        0 0 12px rgba(77,181,255,.42),
-        0 0 22px rgba(177,74,255,.27);
+        0 6px 18px rgba(0,0,0,.36),
+        0 0 8px rgba(77,181,255,.58),
+        0 0 15px rgba(88,101,255,.38),
+        0 0 23px rgba(206,71,255,.18);
       animation: neon-shift 5.6s linear infinite, neon-breathe 2.35s ease-in-out infinite;
+    }
+    #island.active-work::before {
+      opacity: .5;
+      animation: neon-shift 5.6s linear infinite, halo-breathe 2.35s ease-in-out infinite;
+    }
+    #island.active-work::after {
+      opacity: .56;
+      animation: neon-shift 6.8s linear infinite, aura-breathe 2.35s ease-in-out infinite;
     }
     #island.has-attention:not(.active-work) {
       padding: 1.5px;
       background: linear-gradient(120deg, rgba(255,195,82,.9), rgba(255,119,91,.72));
       box-shadow:
-        0 8px 28px rgba(0,0,0,.36),
-        0 0 15px rgba(255,177,71,.3);
+        0 6px 18px rgba(0,0,0,.36),
+        0 0 12px rgba(255,177,71,.4),
+        0 0 22px rgba(255,112,92,.18);
+    }
+    #island.has-attention:not(.active-work)::before {
+      opacity: .3;
+      background: linear-gradient(120deg, #ffc352, #ff775b);
+    }
+    #island.has-attention:not(.active-work)::after {
+      opacity: .42;
+      background: linear-gradient(
+        120deg,
+        rgba(255,195,82,.66),
+        rgba(255,119,91,.58)
+      );
     }
     @keyframes neon-shift {
       0% { background-position: 0% 50%; }
@@ -67,28 +149,44 @@ pub(super) const ISLAND_STYLE: &str = r#"
     @keyframes neon-breathe {
       0%, 100% {
         box-shadow:
-          0 8px 28px rgba(0,0,0,.36),
-          0 0 9px rgba(77,181,255,.32),
-          0 0 16px rgba(177,74,255,.2);
+          0 6px 18px rgba(0,0,0,.36),
+          0 0 7px rgba(77,181,255,.42),
+          0 0 14px rgba(88,101,255,.28),
+          0 0 21px rgba(177,74,255,.14);
       }
       50% {
         box-shadow:
-          0 8px 30px rgba(0,0,0,.38),
-          0 0 18px rgba(77,181,255,.68),
-          0 0 30px rgba(224,73,255,.46);
+          0 7px 20px rgba(0,0,0,.38),
+          0 0 11px rgba(77,181,255,.76),
+          0 0 18px rgba(88,101,255,.5),
+          0 0 24px rgba(224,73,255,.25);
       }
+    }
+    @keyframes halo-breathe {
+      0%, 100% { opacity: .34; filter: blur(8px) saturate(1.2); }
+      50% { opacity: .64; filter: blur(11px) saturate(1.42); }
+    }
+    @keyframes aura-breathe {
+      0%, 100% { opacity: .38; transform: scale(.96, .9); }
+      50% { opacity: .72; transform: scale(1, 1); }
     }
     @keyframes attention-pulse {
       0%, 100% { box-shadow: 0 0 0 0 rgba(255,190,76,0); }
       50% { box-shadow: 0 0 0 3px rgba(255,190,76,.13); }
     }
-    #island.expanded { width: 100%; height: 100%; border-radius: 28px; }
+    #island.expanded {
+      --island-radius: 28px;
+      width: 560px;
+      height: 360px;
+    }
     .surface {
+      position: relative;
+      z-index: 1;
       width: 100%;
       height: 100%;
       overflow: hidden;
       background: rgba(3,3,5,.985);
-      border-radius: inherit;
+      border-radius: calc(var(--island-radius) - 2px);
       box-shadow: inset 0 1px rgba(255,255,255,.035);
     }
     #island.has-attention .surface {
@@ -97,16 +195,16 @@ pub(super) const ISLAND_STYLE: &str = r#"
         inset 0 0 0 1px rgba(255,196,91,.075);
     }
     .summary {
-      height: 41px;
+      height: 57px;
       display: grid;
-      grid-template-columns: 30px minmax(0,1fr) auto;
+      grid-template-columns: 30px minmax(0,1fr) 152px;
       align-items: center;
       column-gap: 8px;
-      padding: 0 12px 0 9px;
+      padding: 0 11px 0 9px;
       cursor: pointer;
     }
     .summary-copy { min-width: 0; line-height: 1.08; }
-    .headline, .detail, .agent, .task, .workspace {
+    .headline, .detail, .compact-agent, .compact-status, .agent, .task, .workspace {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -117,23 +215,100 @@ pub(super) const ISLAND_STYLE: &str = r#"
       font-weight: 680;
       letter-spacing: -.01em;
     }
+    .summary-context {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 4px;
+    }
+    .compact-agent {
+      flex: 0 1 auto;
+      max-width: 72px;
+      color: #b0b0ba;
+      font-size: 9.75px;
+      font-weight: 620;
+    }
+    .context-separator {
+      flex: none;
+      color: #565661;
+      font-size: 8px;
+    }
     .detail {
-      margin-top: 3px;
+      min-width: 0;
+      flex: 1;
       color: #92929d;
-      font-size: 10px;
+      font-size: 9.75px;
       font-weight: 520;
     }
     .summary-tail {
+      min-width: 0;
+      display: grid;
+      align-content: center;
+      row-gap: 5px;
+    }
+    .compact-primary,
+    .compact-overview {
+      min-width: 0;
       display: flex;
       align-items: center;
       justify-content: flex-end;
-      gap: 6px;
+      white-space: nowrap;
+    }
+    .compact-primary { gap: 7px; }
+    .compact-overview {
+      gap: 5px;
+      color: #757580;
+      font-size: 8.5px;
+      font-weight: 610;
+      font-variant-numeric: tabular-nums;
+    }
+    .compact-status {
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      color: #9da5b4;
+      font-size: 9.5px;
+      font-weight: 680;
+    }
+    .compact-status::before {
+      content: "";
+      flex: none;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 5px currentColor;
+    }
+    .compact-status.planning { color: #8bb9ff; }
+    .compact-status.working { color: #73d99c; }
+    .compact-status.attention { color: #ffd166; }
+    .compact-status.idle { color: #888893; }
+    .compact-status.success { color: #79e3a7; }
+    .compact-status.danger { color: #ff757f; }
+    .compact-status.cancelled { color: #b0a7bd; }
+    .summary .compact-duration {
+      flex: none;
+      min-width: 34px;
+      color: #a0a0aa;
+      font-size: 9px;
+      font-weight: 620;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .compact-running { color: #82cda0; }
+    .compact-total { color: #777782; }
+    .metric-separator {
+      color: #4f4f59;
+      font-size: 7px;
     }
     .compact-attention {
       display: none;
-      min-width: 17px;
+      flex: none;
+      min-width: 20px;
       height: 17px;
-      padding: 0 5px;
+      padding: 0 6px;
       border: 1px solid rgba(255,199,92,.34);
       border-radius: 9px;
       color: #ffd67d;
@@ -144,8 +319,9 @@ pub(super) const ISLAND_STYLE: &str = r#"
       text-align: center;
       font-variant-numeric: tabular-nums;
     }
-    .compact-attention.visible { display: block; }
+    .compact-attention.visible { display: inline-block; }
     .chevron {
+      flex: none;
       width: 13px;
       color: #7d7d88;
       font-size: 14px;
@@ -155,7 +331,7 @@ pub(super) const ISLAND_STYLE: &str = r#"
     }
     #island.expanded .chevron { transform: rotate(180deg); }
     .panel {
-      height: calc(100% - 41px);
+      height: calc(100% - 57px);
       display: flex;
       flex-direction: column;
       padding: 3px 9px 10px;
@@ -178,7 +354,7 @@ pub(super) const ISLAND_STYLE: &str = r#"
     }
     .panel-title {
       flex: none;
-      min-height: 22px;
+      min-height: 30px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -213,15 +389,16 @@ pub(super) const ISLAND_STYLE: &str = r#"
     .badge { display: none; color: #ffd166; font-size: 9px; }
     .badge.visible { display: block; }
     .island-power {
-      height: 20px;
-      padding: 0 8px;
+      min-width: 62px;
+      height: 28px;
+      padding: 0 11px;
       border: 1px solid rgba(255,104,119,.24);
-      border-radius: 10px;
+      border-radius: 14px;
       color: #ffb2b9;
       background: rgba(199,55,70,.11);
-      font-size: 8.75px;
+      font-size: 10px;
       font-weight: 650;
-      line-height: 18px;
+      line-height: 26px;
       cursor: pointer;
       -webkit-appearance: none;
       appearance: none;
@@ -236,22 +413,23 @@ pub(super) const ISLAND_STYLE: &str = r#"
       display: flex;
       align-items: center;
       gap: 5px;
-      min-height: 31px;
+      min-height: 39px;
       padding: 2px 7px 7px;
     }
     .filter {
-      height: 22px;
+      min-width: 62px;
+      height: 30px;
       display: inline-flex;
       align-items: center;
       gap: 5px;
-      padding: 0 8px;
+      padding: 0 10px;
       border: 1px solid rgba(255,255,255,.075);
-      border-radius: 11px;
+      border-radius: 15px;
       color: #82828d;
       background: rgba(255,255,255,.025);
-      font-size: 8.75px;
+      font-size: 9.75px;
       font-weight: 620;
-      line-height: 20px;
+      line-height: 28px;
       cursor: pointer;
       -webkit-appearance: none;
       appearance: none;
@@ -294,9 +472,9 @@ pub(super) const ISLAND_STYLE: &str = r#"
     #activities::-webkit-scrollbar { display: none; }
     .activity {
       position: relative;
-      min-height: 49px;
+      min-height: 58px;
       display: grid;
-      grid-template-columns: 30px minmax(0,1fr) minmax(136px,auto);
+      grid-template-columns: 30px minmax(0,1fr) minmax(176px,auto);
       align-items: center;
       gap: 8px;
       padding: 6px 7px;
@@ -359,6 +537,19 @@ pub(super) const ISLAND_STYLE: &str = r#"
       color: #9696a0;
       font-size: 9.75px;
     }
+    .attention-reason {
+      margin-top: 6px;
+      padding: 6px 8px;
+      border: 1px solid rgba(255,196,91,.13);
+      border-radius: 8px;
+      color: #d8bd83;
+      background: rgba(151,94,18,.08);
+      font-size: 9.5px;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+      user-select: text;
+      -webkit-user-select: text;
+    }
     .child-progress {
       display: flex;
       align-items: center;
@@ -386,8 +577,8 @@ pub(super) const ISLAND_STYLE: &str = r#"
       transition: width 180ms ease;
     }
     .row-meta {
-      min-width: 136px;
-      max-width: 196px;
+      min-width: 176px;
+      max-width: 232px;
       text-align: right;
     }
     .status-line {
@@ -410,20 +601,21 @@ pub(super) const ISLAND_STYLE: &str = r#"
       min-height: 0;
       display: flex;
       justify-content: flex-end;
-      gap: 4px;
-      margin-top: 4px;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 7px;
     }
     .control {
-      min-width: 35px;
-      height: 18px;
-      padding: 0 7px;
+      min-width: 56px;
+      height: 30px;
+      padding: 0 11px;
       border: 1px solid rgba(255,255,255,.13);
-      border-radius: 9px;
+      border-radius: 10px;
       color: #d9d9df;
       background: rgba(255,255,255,.065);
-      font-size: 8.5px;
+      font-size: 10px;
       font-weight: 650;
-      line-height: 16px;
+      line-height: 28px;
       text-align: center;
       cursor: pointer;
       -webkit-appearance: none;
@@ -449,6 +641,61 @@ pub(super) const ISLAND_STYLE: &str = r#"
       background: rgba(199,55,70,.12);
     }
     .control:disabled { cursor: default; opacity: .48; }
+    .reply-composer {
+      grid-column: 2 / -1;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0,1fr) auto;
+      align-items: end;
+      gap: 8px;
+      margin: 2px 0 4px;
+      padding: 8px;
+      border: 1px solid rgba(116,145,255,.15);
+      border-radius: 11px;
+      background: rgba(54,68,124,.075);
+    }
+    .reply-input {
+      width: 100%;
+      min-height: 34px;
+      max-height: 74px;
+      resize: vertical;
+      padding: 8px 10px;
+      border: 1px solid rgba(255,255,255,.13);
+      border-radius: 9px;
+      outline: none;
+      color: #ededf2;
+      background: rgba(0,0,0,.28);
+      font: 10.5px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+    .reply-input::placeholder { color: #737381; }
+    .reply-input:focus {
+      border-color: rgba(116,145,255,.48);
+      box-shadow: 0 0 0 3px rgba(83,108,224,.12);
+    }
+    .reply-send {
+      min-width: 64px;
+      height: 34px;
+      padding: 0 12px;
+      border: 1px solid rgba(99,148,255,.32);
+      border-radius: 10px;
+      color: #dbe5ff;
+      background: rgba(67,110,211,.2);
+      font-size: 10.5px;
+      font-weight: 680;
+      cursor: pointer;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    .reply-send:hover:not(:disabled) {
+      border-color: rgba(123,166,255,.54);
+      background: rgba(67,110,211,.3);
+    }
+    .reply-send:disabled, .reply-input:disabled {
+      cursor: default;
+      opacity: .5;
+    }
     .empty-state {
       height: 100%;
       min-height: 110px;
@@ -600,19 +847,28 @@ pub(super) const ISLAND_STYLE: &str = r#"
     .robot .pip.idle, .robot .pip.inferred { background: #858b99; }
 
     @media (prefers-reduced-motion: reduce) {
-      #island, .panel, .chevron, .progress-fill, .attention-filter {
+      #island, #island::before, #island::after,
+      .panel, .chevron, .progress-fill, .attention-filter {
         transition: none !important;
         animation: none !important;
       }
       #island.active-work {
         background-position: 48% 50%;
         box-shadow:
-          0 8px 28px rgba(0,0,0,.36),
-          0 0 12px rgba(77,181,255,.42),
-          0 0 20px rgba(177,74,255,.25);
+          0 6px 18px rgba(0,0,0,.36),
+          0 0 8px rgba(77,181,255,.58),
+          0 0 16px rgba(88,101,255,.38),
+          0 0 23px rgba(177,74,255,.18);
+      }
+      #island.active-work::before { opacity: .48; }
+      #island.active-work::after {
+        opacity: .56;
+        transform: scale(.98, .94);
       }
     }
     html.webview-backgrounded #island,
+    html.webview-backgrounded #island::before,
+    html.webview-backgrounded #island::after,
     html.webview-backgrounded .panel,
     html.webview-backgrounded .chevron,
     html.webview-backgrounded .progress-fill,

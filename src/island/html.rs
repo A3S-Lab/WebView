@@ -23,11 +23,25 @@ const DOCUMENT_BODY: &str = r#"
         <div id="summary-robot" aria-hidden="true"></div>
         <div class="summary-copy">
           <div class="headline" id="headline">A3S agents</div>
-          <div class="detail" id="detail">Connecting…</div>
+          <div class="summary-context">
+            <span class="compact-agent" id="compact-agent">Agent</span>
+            <span class="context-separator" aria-hidden="true">·</span>
+            <span class="detail" id="detail">Connecting…</span>
+          </div>
         </div>
         <div class="summary-tail">
-          <span class="compact-attention" id="compact-attention" aria-label="Agents need you"></span>
-          <span class="chevron" aria-hidden="true">⌄</span>
+          <div class="compact-primary">
+            <span class="compact-status inferred" id="compact-status">Connecting</span>
+            <span class="compact-duration duration" id="compact-duration">—</span>
+          </div>
+          <div class="compact-overview">
+            <span class="compact-running" id="compact-running">0 running</span>
+            <span class="metric-separator" aria-hidden="true">·</span>
+            <span class="compact-total" id="compact-total">0 total</span>
+            <span class="compact-attention" id="compact-attention"
+                  aria-label="Agents need you"></span>
+            <span class="chevron" aria-hidden="true">⌄</span>
+          </div>
         </div>
       </section>
       <section class="panel" id="panel" aria-label="Agent activity details"
@@ -124,6 +138,45 @@ mod tests {
     }
 
     #[test]
+    fn glow_has_native_bleed_space_and_only_the_inner_surface_clips() {
+        let html = html();
+        assert!(html.contains("top: 32px"));
+        assert!(html.contains("overflow: visible"));
+        assert!(html.contains("contain: layout;"));
+        assert!(!html.contains("contain: layout paint"));
+        assert!(html.contains(".surface"));
+        assert!(html.contains("overflow: hidden"));
+        assert!(html.contains("inset: -30px -46px"));
+        assert!(html.contains("-webkit-mask-image: radial-gradient"));
+        assert!(html.contains("transparent 78%"));
+        assert!(!html.contains("0 0 68px"));
+        assert!(!html.contains("0 0 66px"));
+    }
+
+    #[test]
+    fn collapsed_summary_exposes_primary_state_time_and_agent_counts() {
+        let html = html();
+        for id in [
+            "compact-agent",
+            "compact-status",
+            "compact-duration",
+            "compact-running",
+            "compact-total",
+            "compact-attention",
+        ] {
+            assert!(html.contains(&format!("id=\"{id}\"")));
+        }
+        assert!(html.contains("width: 392px"));
+        assert!(html.contains("height: 60px"));
+        assert!(html.contains("data.primary_agent"));
+        assert!(html.contains("data.status"));
+        assert!(html.contains("data.primary_started_at_ms"));
+        assert!(html.contains("data.primary_finished_at_ms"));
+        assert!(html.contains("`${metrics.running} running`"));
+        assert!(html.contains("`${metrics.total} total`"));
+    }
+
+    #[test]
     fn inline_controls_are_json_ipc_and_do_not_toggle_the_island() {
         let html = html();
         assert!(html.contains("event.stopPropagation()"));
@@ -132,6 +185,22 @@ mod tests {
         assert!(html.contains("controlResult"));
         assert!(html.contains("summary.addEventListener('click'"));
         assert!(!html.contains("root.addEventListener('click'"));
+    }
+
+    #[test]
+    fn hitl_rows_explain_the_request_and_support_a_real_text_reply() {
+        let html = html();
+        assert!(html.contains("attention-reason"));
+        assert!(html.contains("item.reason"));
+        assert!(html.contains("reply-composer"));
+        assert!(html.contains("reply-input"));
+        assert!(html.contains("action: 'reply'"));
+        assert!(html.contains("message: value"));
+        assert!(html.contains("event.shiftKey"));
+        assert_eq!(html.matches("markRowPending(row);").count(), 2);
+        assert!(html.contains("restoreRowActions(row);"));
+        assert!(html.contains("min-width: 56px"));
+        assert!(html.contains("height: 30px"));
     }
 
     #[test]

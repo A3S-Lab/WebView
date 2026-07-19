@@ -92,7 +92,7 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
     let mut event_loop = EventLoopBuilder::<IslandEvent>::with_user_event().build();
     window::configure_event_loop(&mut event_loop);
     let window = window::create_window(&event_loop)?;
-    window::configure_native_window(&window)?;
+    window::configure_native_window(&window, false)?;
     window::resize_and_center(&window, IslandSize::Collapsed);
 
     let proxy = event_loop.create_proxy();
@@ -115,7 +115,7 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
     // exact physical top-center frame after attachment and before first show.
     window::resize_and_center(&window, IslandSize::Collapsed);
     sync_webview_bounds(&webview, &window)?;
-    window::configure_native_window(&window)?;
+    window::configure_native_window(&window, false)?;
     window::show_without_focus(&window);
 
     let started = Instant::now();
@@ -147,7 +147,7 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                 expanded = true;
                 window::resize_and_center(&window, IslandSize::Expanded);
                 if let Err(error) = sync_webview_bounds(&webview, &window)
-                    .and_then(|()| window::configure_native_window(&window))
+                    .and_then(|()| window::configure_native_window(&window, true))
                 {
                     eprintln!("a3s-webview: agent island: {error}");
                     *control_flow = ControlFlow::Exit;
@@ -161,7 +161,7 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                     expanded = false;
                     window::resize_and_center(&window, IslandSize::Collapsed);
                     if let Err(error) = sync_webview_bounds(&webview, &window)
-                        .and_then(|()| window::configure_native_window(&window))
+                        .and_then(|()| window::configure_native_window(&window, false))
                     {
                         eprintln!("a3s-webview: agent island: {error}");
                         *control_flow = ControlFlow::Exit;
@@ -192,7 +192,15 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                 let action = submission.action;
                 let result = snapshots.submit_control(submission, epoch_ms());
                 let (accepted, message) = match result {
-                    Ok(()) => (true, "Sent".to_string()),
+                    Ok(()) => (
+                        true,
+                        if action == control::AgentControlActionKind::Reply {
+                            "Queued"
+                        } else {
+                            "Sent"
+                        }
+                        .to_string(),
+                    ),
                     Err(error) => {
                         snapshots.report_error(error.clone());
                         (false, "Try again".to_string())
@@ -447,7 +455,7 @@ impl SnapshotRuntime {
             return Ok(SnapshotObservation::Unavailable);
         }
 
-        self.current_useful = snapshot.has_exact_lifecycle();
+        self.current_useful = snapshot.has_visible_activity();
         let current_tokens = snapshot
             .activities
             .iter()
@@ -791,9 +799,27 @@ mod tests {
     }
 
     #[test]
-    fn fresh_idle_snapshot_requests_clean_shutdown() {
+    fn fresh_idle_snapshot_stays_active_while_an_external_agent_is_detected() {
         let bytes = format!(
             r#"{{"schema":"{}","updated_at_ms":1000,"activities":[{{"id":"idle","agent":"a3s-code","state":"idle","confidence":"exact"}},{{"id":"process","agent":"codex","state":"unknown","confidence":"process"}}]}}"#,
+            status::SNAPSHOT_SCHEMA
+        );
+        let snapshot = Snapshot::parse(bytes.as_bytes(), 1_000).unwrap();
+        let started = Instant::now();
+        let mut runtime =
+            SnapshotRuntime::new(std::env::temp_dir().join("snapshot.json"), started).unwrap();
+
+        assert_eq!(
+            runtime.display_snapshot(snapshot, 1_000, started).unwrap(),
+            SnapshotObservation::Active
+        );
+        assert!(runtime.current_useful);
+    }
+
+    #[test]
+    fn fresh_idle_snapshot_without_external_activity_requests_clean_shutdown() {
+        let bytes = format!(
+            r#"{{"schema":"{}","updated_at_ms":1000,"activities":[{{"id":"idle","agent":"a3s-code","state":"idle","confidence":"exact"}}]}}"#,
             status::SNAPSHOT_SCHEMA
         );
         let snapshot = Snapshot::parse(bytes.as_bytes(), 1_000).unwrap();

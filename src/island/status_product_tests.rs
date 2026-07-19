@@ -27,7 +27,7 @@ fn rendered_metrics_and_categories_use_exact_overlapping_lifecycle_groups() {
 
     assert_eq!(rendered["metrics"]["total"], 7);
     assert_eq!(rendered["metrics"]["needs_attention"], 3);
-    assert_eq!(rendered["metrics"]["running"], 1);
+    assert_eq!(rendered["metrics"]["running"], 2);
     assert_eq!(rendered["metrics"]["recent"], 3);
     assert_eq!(rendered["metrics"]["inferred"], 1);
     assert_eq!(
@@ -36,9 +36,44 @@ fn rendered_metrics_and_categories_use_exact_overlapping_lifecycle_groups() {
     );
     assert_eq!(
         rendered["activities"][4]["categories"],
-        serde_json::json!([])
+        serde_json::json!(["running"])
     );
     assert_eq!(rendered["attention_keys"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn process_evidence_keeps_the_island_alive_and_drives_the_work_neon() {
+    let bytes = snapshot_json(
+        10_000,
+        r#"[{"id":"codex","agent":"Codex","state":"unknown","confidence":"process","vendor":"open_ai"}]"#,
+    );
+    let snapshot = Snapshot::parse(&bytes, 10_000).unwrap();
+    let rendered: serde_json::Value =
+        serde_json::from_str(&snapshot.render_json().unwrap()).unwrap();
+
+    assert!(snapshot.has_visible_activity());
+    assert_eq!(rendered["active_work"], true);
+    assert_eq!(rendered["metrics"]["running"], 1);
+    assert_eq!(
+        rendered["activities"][0]["categories"],
+        serde_json::json!(["running"])
+    );
+}
+
+#[test]
+fn rendered_hitl_reason_is_bounded_and_available_to_the_expanded_row() {
+    let bytes = snapshot_json(
+        10_000,
+        r#"[{"id":"approval","agent":"a3s-code","state":"waiting_approval","confidence":"exact","reason":"Permission required to run Bash(cargo test)."}]"#,
+    );
+    let snapshot = Snapshot::parse(&bytes, 10_000).unwrap();
+    let rendered: serde_json::Value =
+        serde_json::from_str(&snapshot.render_json().unwrap()).unwrap();
+
+    assert_eq!(
+        rendered["activities"][0]["reason"],
+        "Permission required to run Bash(cargo test)."
+    );
 }
 
 #[test]
