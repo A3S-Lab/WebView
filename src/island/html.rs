@@ -1,3 +1,5 @@
+#[path = "html/lifecycle.rs"]
+mod lifecycle;
 #[path = "html/script.rs"]
 mod script;
 #[path = "html/style.rs"]
@@ -90,7 +92,9 @@ pub(crate) fn island_html() -> String {
         DOCUMENT_START,
         style::ISLAND_STYLE,
         DOCUMENT_BODY,
-        script::ISLAND_SCRIPT,
+        script::ISLAND_SCRIPT_START,
+        lifecycle::ISLAND_LIFECYCLE_SCRIPT,
+        script::ISLAND_SCRIPT_END,
         DOCUMENT_END,
     ]
     .concat()
@@ -135,10 +139,15 @@ mod tests {
         assert!(html.contains("#island.closing"));
         assert!(html.contains("requestAnimationFrame"));
         assert!(html.contains("transitionend"));
+        assert!(html.contains("post('present')"));
+        assert!(html.contains("beginOpen"));
+        assert!(html.contains("expandAfterOpen"));
         assert!(html.contains("pendingActivityRender"));
         assert!(html.contains("width: 560px;\n      height: 303px;"));
         assert!(html.contains("post('close-complete')"));
         assert!(html.contains("beginClose"));
+        assert!(html.contains("freezeResizeForClose"));
+        assert!(html.contains("closing && event.propertyName === 'transform'"));
         assert!(!html.contains("window.setTimeout(completeCollapse, 235)"));
 
         let set_expanded = html
@@ -154,6 +163,13 @@ mod tests {
             .map(|(body, _)| body)
             .expect("beginCollapse function");
         assert!(!begin_collapse.contains("renderActivities("));
+
+        let begin_close = html
+            .split_once("function beginClose")
+            .and_then(|(_, tail)| tail.split_once("function syncPanelAccess"))
+            .map(|(body, _)| body)
+            .expect("beginClose function");
+        assert!(!begin_close.contains("classList.remove('expanded')"));
     }
 
     #[test]

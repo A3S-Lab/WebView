@@ -95,14 +95,16 @@ the animated, multilayer multicolor neon border. Reduced-motion mode keeps a
 static color border, and backgrounded WebViews receive a low-frequency direct
 repaint so WebKit timer throttling does not freeze the breathing effect.
 
-Lifecycle motion is synchronized with the rendered surface. The compact island
-waits for its first rendered snapshot before easing in, activity rows are not
-rebuilt on an expand or collapse frame, and transition completion rather than a
-fixed delay drives the native resize handshake. A background classification
-pauses only continuous neon work, not the bounded open, resize, and close
-transitions. On macOS the child WKWebView participates in the native window
-resize transaction; reduced-motion preferences still make every lifecycle
-change immediate.
+Lifecycle motion is synchronized with the rendered surface. The native window
+stays hidden until the first snapshot has been laid out, then the compact island
+eases in from a committed frame. Expansion prepares the transparent native host
+first and leaves the visible geometry to one WebKit timeline; collapse finishes
+that timeline before shrinking the transparent host. Activity rows are not
+rebuilt during either morph, automatic attention expansion waits for opening to
+finish, and closing preserves the current geometry until its longest compositor
+transition completes. A background classification pauses only continuous neon
+work, not bounded lifecycle transitions. Reduced-motion preferences make every
+lifecycle change immediate.
 
 Control clicks and replies are authorized against the latest sanitized snapshot
 and written as bounded, versioned requests to a private sibling queue. Replies
