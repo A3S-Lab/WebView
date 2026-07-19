@@ -55,9 +55,24 @@ impl IslandLock {
 
         match FileExt::try_lock_exclusive(&file) {
             Ok(()) => Ok(Some(Self { file })),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) if is_lock_contended(&error) => Ok(None),
             Err(error) => Err(format!("lock agent island singleton: {error}")),
         }
+    }
+}
+
+fn is_lock_contended(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION as i32)
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 
@@ -153,6 +168,15 @@ mod tests {
             return;
         };
         assert!(IslandLock::acquire(Path::new(&path)).unwrap().is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_lock_violation_is_contention() {
+        let error = io::Error::from_raw_os_error(
+            windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION as i32,
+        );
+        assert!(is_lock_contended(&error));
     }
 
     #[cfg(unix)]
