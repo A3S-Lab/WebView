@@ -14,9 +14,8 @@ pub(super) const ISLAND_STYLE: &str = r#"
     body { user-select: none; -webkit-user-select: none; }
     button { font-family: inherit; }
     #island {
-      --island-radius: 30px;
-      --island-resize-duration: 260ms;
-      --island-motion-ease: cubic-bezier(.22,1,.36,1);
+      --island-resize-duration: 300ms;
+      --island-motion-ease: cubic-bezier(.2,.82,.2,1);
       position: absolute;
       top: 32px;
       left: 50%;
@@ -29,14 +28,14 @@ pub(super) const ISLAND_STYLE: &str = r#"
       overflow: visible;
       color: rgba(255,255,255,.96);
       background: rgba(255,255,255,.105);
-      border-radius: var(--island-radius);
+      border-radius: 30px;
       box-shadow: 0 6px 18px rgba(0,0,0,.34);
       cursor: default;
       transition: width var(--island-resize-duration) var(--island-motion-ease),
                   height var(--island-resize-duration) var(--island-motion-ease),
                   border-radius var(--island-resize-duration) var(--island-motion-ease),
-                  opacity 180ms ease,
-                  transform 240ms var(--island-motion-ease);
+                  opacity 200ms ease-out,
+                  transform 280ms var(--island-motion-ease);
       contain: layout;
       isolation: isolate;
       backface-visibility: hidden;
@@ -61,12 +60,14 @@ pub(super) const ISLAND_STYLE: &str = r#"
       position: absolute;
       pointer-events: none;
       opacity: 0;
-      transition: opacity 180ms ease, transform 220ms ease;
+      transition: opacity 200ms ease,
+                  transform 240ms ease,
+                  border-radius var(--island-resize-duration) var(--island-motion-ease);
     }
     #island::before {
       z-index: -1;
       inset: -7px;
-      border-radius: calc(var(--island-radius) + 7px);
+      border-radius: 37px;
       background: linear-gradient(
         115deg,
         #38d8ff,
@@ -200,10 +201,11 @@ pub(super) const ISLAND_STYLE: &str = r#"
       50% { box-shadow: 0 0 0 3px rgba(255,190,76,.13); }
     }
     #island.expanded {
-      --island-radius: 28px;
       width: 560px;
       height: 360px;
+      border-radius: 28px;
     }
+    #island.expanded::before { border-radius: 35px; }
     .surface {
       position: relative;
       z-index: 1;
@@ -211,9 +213,11 @@ pub(super) const ISLAND_STYLE: &str = r#"
       height: 100%;
       overflow: hidden;
       background: rgba(3,3,5,.985);
-      border-radius: calc(var(--island-radius) - 2px);
+      border-radius: 28px;
       box-shadow: inset 0 1px rgba(255,255,255,.035);
+      transition: border-radius var(--island-resize-duration) var(--island-motion-ease);
     }
+    #island.expanded .surface { border-radius: 26px; }
     #island.has-attention .surface {
       box-shadow:
         inset 0 1px rgba(255,255,255,.045),
