@@ -1,15 +1,19 @@
 //! `a3s-webview` — a tiny native WebView window helper for the a3s code TUI.
 //!
 //! The TUI is a terminal app and can't embed a WebView in its text grid, so when
-//! 书安OS's progressive API returns a `view` object (url + size) that is a
-//! *partial* page meant for a sized popup (not a full browser tab), it spawns this:
+//! A3S OS's progressive API returns a `view` object (url + size), or the TUI
+//! needs to show a trusted local HTML report, it spawns this:
 //!
 //! ```text
 //! a3s-webview --url https://os.example.com/embed/x --width 720 --height 520 --title "..."
+//! a3s-webview --url file:///tmp/a3s-report/index.html --width 1200 --height 820
 //! ```
 //!
 //! It opens one native window at the requested size, loads the URL, and runs
 //! until the window is closed.
+//! In `--agent-island` mode it instead runs one non-activating, always-on-top
+//! top-center window and renders only the CLI's bounded private snapshot; that
+//! mode is isolated under `island/`.
 //!
 //! ## Navigation controls
 //! back / forward / reload are exposed as buttons. On macOS they are NATIVE
@@ -21,7 +25,7 @@
 //! toolbar (`NAV_TOOLBAR_SCRIPT`).
 //!
 //! ## Auth
-//! The 书安OS web app authenticates from `localStorage`, not a cookie — so a
+//! The A3S OS web app authenticates from `localStorage`, not a cookie — so a
 //! freshly opened WebView would land on the login page. Its `restoreAuth` (see
 //! apps/web `models/auth.model.ts`) requires `auth_token`/`access_token`, an
 //! optional `refresh_token`, AND an `auth_user` object — a token alone is not
@@ -31,6 +35,8 @@
 //! same-origin `GET /api/v1/users/me` and seeds `auth_user` too. Override the token
 //! env name with `--token-env`, disable all of it with `--no-auth`.
 //! `--header 'Name: Value'` (repeatable) still attaches raw request headers.
+
+mod island;
 
 use tao::{
     dpi::LogicalSize,
@@ -58,14 +64,14 @@ struct Args {
     no_auth: bool,
 }
 
-const USAGE: &str = "usage: a3s-webview --url <http(s)://…> [--width N] [--height N] \
+const USAGE: &str = "usage: a3s-webview --url <http(s)://…|file://…> [--width N] [--height N] \
 [--title T] [--header 'Name: Value']… [--token-env NAME] [--no-auth]";
 
 fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
     let mut url: Option<String> = None;
     let mut width = 900.0_f64;
     let mut height = 680.0_f64;
-    let mut title = String::from("渐进式UI");
+    let mut title = String::from("A3S RemoteUI");
     let mut headers = HeaderMap::new();
     let mut token_env = String::from("A3S_OS_TOKEN");
     let mut no_auth = false;
@@ -106,8 +112,8 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
         }
     }
     let url = url.ok_or("--url is required")?;
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err("--url must start with http:// or https://".to_string());
+    if !is_supported_url(&url) {
+        return Err("--url must start with http://, https://, or file://".to_string());
     }
     Ok(Args {
         url,
@@ -121,13 +127,21 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
     })
 }
 
+fn is_supported_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://")
+}
+
+fn is_remote_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
 /// A string escaped into a single-quoted JS string literal (incl. the quotes).
 fn js_str(s: &str) -> String {
     format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
 /// JS run at document-start (before the page's own scripts) that injects the full
-/// 书安OS session into `localStorage` so the SPA's `restoreAuth` loads
+/// A3S OS session into `localStorage` so the SPA's `restoreAuth` loads
 /// authenticated. That needs THREE things, not just the token: `auth_token` /
 /// `access_token`, an optional `refresh_token`, and an `auth_user` object (a user
 /// with an `id`) — without `auth_user` the SPA clears auth and shows the login
@@ -332,11 +346,15 @@ mod macos_titlebar {
             button.setShowsBorderOnlyWhileMouseInside(true);
             button.setImagePosition(NSCellImagePosition::ImageOnly);
             button.setImageScaling(NSImageScaling::ScaleProportionallyDown);
-            button.setFrame(NSRect::new(NSPoint::new(x, (ch - bh) / 2.0), NSSize::new(bw, bh)));
+            button.setFrame(NSRect::new(
+                NSPoint::new(x, (ch - bh) / 2.0),
+                NSSize::new(bw, bh),
+            ));
             // Flexible top+bottom margins → stay vertically centered if AppKit sizes
             // the accessory to a different titlebar height.
             button.setAutoresizingMask(
-                NSAutoresizingMaskOptions::ViewMinYMargin | NSAutoresizingMaskOptions::ViewMaxYMargin,
+                NSAutoresizingMaskOptions::ViewMinYMargin
+                    | NSAutoresizingMaskOptions::ViewMaxYMargin,
             );
             button
         };
@@ -348,7 +366,10 @@ mod macos_titlebar {
         // Manually-framed container so the accessory has a concrete size. It is
         // retained by the accessory VC (setView), which is retained by the window.
         let container = NSView::new(mtm);
-        container.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(bw * 3.0, ch)));
+        container.setFrame(NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(bw * 3.0, ch),
+        ));
         // Fill the titlebar height so the centered buttons sit in the middle.
         container.setAutoresizingMask(NSAutoresizingMaskOptions::ViewHeightSizable);
         container.addSubview(&back);
@@ -367,7 +388,16 @@ mod macos_titlebar {
 }
 
 fn main() {
-    let args = match parse_args(std::env::args().skip(1)) {
+    let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
+    if raw_args.first().is_some_and(|arg| arg == "--agent-island") {
+        if let Err(error) = island::run(raw_args.into_iter().skip(1)) {
+            eprintln!("a3s-webview: {error}\n{}", island::USAGE);
+            std::process::exit(2);
+        }
+        return;
+    }
+
+    let args = match parse_args(raw_args) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("a3s-webview: {e}\n{USAGE}");
@@ -375,7 +405,7 @@ fn main() {
         }
     };
 
-    let auth_script = if args.no_auth {
+    let auth_script = if args.no_auth || !is_remote_url(&args.url) {
         None
     } else {
         let refresh = std::env::var("A3S_OS_REFRESH_TOKEN").ok();
@@ -448,10 +478,13 @@ mod tests {
     }
 
     #[test]
-    fn requires_http_url() {
-        assert!(args(&["--url", "file:///etc/passwd"]).is_err());
+    fn requires_supported_url() {
+        assert!(args(&["--url", "mailto:nope"]).is_err());
         assert!(args(&[]).is_err()); // --url required
         assert!(args(&["--url", "https://os.example.com/x"]).is_ok());
+        assert!(args(&["--url", "file:///tmp/a3s-report/index.html"]).is_ok());
+        assert!(is_remote_url("https://os.example.com/x"));
+        assert!(!is_remote_url("file:///tmp/a3s-report/index.html"));
     }
 
     #[test]
@@ -470,6 +503,12 @@ mod tests {
         assert_eq!(a.title, "T");
         assert_eq!(a.width, 4000.0); // clamped down
         assert_eq!(a.height, 180.0); // clamped up
+    }
+
+    #[test]
+    fn default_title_is_remoteui() {
+        let a = args(&["--url", "https://x"]).unwrap();
+        assert_eq!(a.title, "A3S RemoteUI");
     }
 
     #[test]

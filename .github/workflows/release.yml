@@ -1,45 +1,273 @@
 name: Release
-# One tag → macOS binaries + the `a3s-webview` Homebrew formula, so they never
-# drift. The formula step needs HOMEBREW_TAP_TOKEN (write access to
-# A3S-Lab/homebrew-tap); it skips cleanly if the secret is absent (binaries
-# always build). Linux/Windows aren't shipped yet — they'd need WebKitGTK / the
-# WebView2 runtime; the a3s TUI falls back to the browser there.
+# One tag → native helper binaries for every CLI release target plus the
+# `a3s-webview` Homebrew formula. Linux builds use the host WebKitGTK runtime;
+# Windows uses the WebView2 runtime included with supported Windows releases.
 on:
   push:
     tags: ["v*"]
 permissions:
   contents: write
 jobs:
-  create-release:
+  release-preflight:
     runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ steps.release-context.outputs.release_sha }}
     steps:
       - uses: actions/checkout@v4
-      - name: Create GitHub release
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate release inputs
+        id: release-context
+        shell: bash
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TAP_TOKEN:-}" ]]; then
+            echo "::error::HOMEBREW_TAP_TOKEN not set — cannot publish the a3s-webview Homebrew channel"
+            exit 1
+          fi
+          if [[ "$(GH_TOKEN="$TAP_TOKEN" gh api repos/A3S-Lab/homebrew-tap \
+            --jq '.permissions.push // false')" != true ]]; then
+            echo "::error::HOMEBREW_TAP_TOKEN cannot write A3S-Lab/homebrew-tap"
+            exit 1
+          fi
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "a3s-webview") | .version')"
+          if [[ -z "$version" || "$version" == null ]]; then
+            echo "::error::Could not resolve the a3s-webview package version"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_NAME" != "v${version}" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match a3s-webview ${version}"
+            exit 1
+          fi
+          release_sha="$(git rev-list -n 1 "refs/tags/${GITHUB_REF_NAME}")"
+          checkout_sha="$(git rev-parse HEAD)"
+          if [[ -z "$release_sha" || "$release_sha" != "$checkout_sha" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not resolve to the checked-out release commit"
+            exit 1
+          fi
+          echo "release_sha=${release_sha}" >> "$GITHUB_OUTPUT"
+
+  create-release:
+    needs: release-preflight
+    runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ needs.release-preflight.outputs.release_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create or resume owned draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ needs.release-preflight.outputs.release_sha }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
-                 --notes "a3s-webview ${GITHUB_REF_NAME}" --verify-tag
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+          current_tag_sha="$(git rev-list -n 1 "refs/tags/${tag}")"
+          if [[ -z "$RELEASE_SHA" || "$current_tag_sha" != "$RELEASE_SHA" ]]; then
+            echo "::error::Tag ${tag} no longer resolves to the preflighted release commit"
+            exit 1
+          fi
+          marker="<!-- a3s-webview-release-workflow:v1 sha:${RELEASE_SHA} -->"
+          if release_json="$(gh release view "$tag" \
+            --json body,isDraft,isPrerelease,name,tagName 2>/dev/null)"; then
+            if ! jq -e \
+              --arg tag "$tag" \
+              --arg marker "$marker" \
+              '.isDraft == true and .isPrerelease == false and .tagName == $tag
+               and .name == $tag and (.body | contains($marker))' \
+              <<<"$release_json" >/dev/null; then
+              echo "::error::Release ${tag} already exists but is not this workflow's owned draft"
+              exit 1
+            fi
+          else
+            printf -v release_notes 'a3s-webview %s\n\n%s\n' "$tag" "$marker"
+            gh release create "$tag" --draft --prerelease=false --title "$tag" \
+              --notes "$release_notes" --verify-tag
+          fi
 
   binaries:
     needs: create-release
     strategy:
       fail-fast: false
       matrix:
-        target: [aarch64-apple-darwin, x86_64-apple-darwin]
-    runs-on: macos-latest
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, linux: true }
+          # Keep both GNU/Linux artifacts on the Ubuntu 22.04 glibc baseline.
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, linux: true }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          fetch-depth: 0
+      - name: Install Linux WebView dependencies
+        if: matrix.linux == true
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev
+      - name: Build release archives
+        uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: a3s-webview
           target: ${{ matrix.target }}
           archive: a3s-webview-$tag-$target
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tar: all
+          zip: windows
+          checksum: sha256
+          dry-run: true
+          dry-run-intended: true
+      - name: Verify owned draft and upload release archives
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ needs.create-release.outputs.release_sha }}
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+          current_tag_sha="$(git rev-list -n 1 "refs/tags/${tag}")"
+          if [[ -z "$RELEASE_SHA" || "$current_tag_sha" != "$RELEASE_SHA" ]]; then
+            echo "::error::Tag ${tag} no longer resolves to the preflighted release commit"
+            exit 1
+          fi
+          marker="<!-- a3s-webview-release-workflow:v1 sha:${RELEASE_SHA} -->"
+          release_json="$(gh release view "$tag" \
+            --json body,isDraft,isPrerelease,name,tagName)"
+          if ! jq -e \
+            --arg tag "$tag" \
+            --arg marker "$marker" \
+            '.isDraft == true and .isPrerelease == false and .tagName == $tag
+             and .name == $tag and (.body | contains($marker))' \
+            <<<"$release_json" >/dev/null; then
+            echo "::error::Release ${tag} is not this workflow's owned draft"
+            exit 1
+          fi
+
+          base="a3s-webview-${tag}-${RELEASE_TARGET}"
+          assets=("${base}.tar.gz" "${base}.sha256")
+          if [[ "$RELEASE_TARGET" == "x86_64-pc-windows-msvc" ]]; then
+            assets+=("${base}.zip")
+          fi
+          for asset in "${assets[@]}"; do
+            if [[ ! -f "$asset" ]]; then
+              echo "::error::Release build did not produce ${asset}"
+              exit 1
+            fi
+          done
+          gh release upload "$tag" "${assets[@]}" --clobber
+
+  publish-release:
+    needs: [create-release, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify complete assets and publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ needs.create-release.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          for target in \
+            aarch64-apple-darwin \
+            x86_64-apple-darwin \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu \
+            x86_64-pc-windows-msvc; do
+            base="a3s-webview-${tag}-${target}"
+            printf '%s\n' "${base}.tar.gz" "${base}.sha256"
+            if [[ "$target" == x86_64-pc-windows-msvc ]]; then
+              printf '%s\n' "${base}.zip"
+            fi
+          done | sort > expected-assets.txt
+          gh release view "$tag" --json assets \
+            --jq '.assets[].name' | sort > actual-assets.txt
+          if ! diff -u expected-assets.txt actual-assets.txt; then
+            echo "::error::Release ${tag} does not contain the exact expected asset set"
+            exit 1
+          fi
+          mkdir release-assets
+          gh release download "$tag" --dir release-assets --pattern 'a3s-webview-*'
+          for target in \
+            aarch64-apple-darwin \
+            x86_64-apple-darwin \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu \
+            x86_64-pc-windows-msvc; do
+            base="a3s-webview-${tag}-${target}"
+            archives=("${base}.tar.gz")
+            if [[ "$target" == x86_64-pc-windows-msvc ]]; then
+              archives+=("${base}.zip")
+            fi
+            checksum="release-assets/${base}.sha256"
+            checksum_lines="$(awk 'END { print NR }' "$checksum")"
+            checksum_entries="$(awk 'NF == 2 { count += 1 } END { print count + 0 }' "$checksum")"
+            if [[ "$checksum_lines" -ne "${#archives[@]}" \
+              || "$checksum_entries" -ne "${#archives[@]}" ]]; then
+              echo "::error::${base}.sha256 does not contain exactly one entry per archive"
+              exit 1
+            fi
+            for archive in "${archives[@]}"; do
+              expected="$(awk -v asset="$archive" \
+                '($2 == asset || $2 == "*" asset) \
+                 && length($1) == 64 && $1 !~ /[^0-9a-f]/ \
+                 { digest = $1; count += 1 } \
+                 END { if (count == 1) print digest }' "$checksum")"
+              if [[ -z "$expected" ]]; then
+                echo "::error::${base}.sha256 has no unique valid digest for ${archive}"
+                exit 1
+              fi
+              actual="$(sha256sum "release-assets/${archive}" | awk '{ print $1 }')"
+              if [[ "$actual" != "$expected" ]]; then
+                echo "::error::SHA-256 mismatch for ${archive}"
+                exit 1
+              fi
+            done
+          done
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+          current_tag_sha="$(git rev-list -n 1 "refs/tags/${tag}")"
+          if [[ -z "$RELEASE_SHA" || "$current_tag_sha" != "$RELEASE_SHA" ]]; then
+            echo "::error::Tag ${tag} no longer resolves to the preflighted release commit"
+            exit 1
+          fi
+          marker="<!-- a3s-webview-release-workflow:v1 sha:${RELEASE_SHA} -->"
+          release_json="$(gh release view "$tag" \
+            --json body,isDraft,isPrerelease,name,tagName)"
+          if ! jq -e \
+            --arg tag "$tag" \
+            --arg marker "$marker" \
+            '(.isDraft == true or .isDraft == false) and .isPrerelease == false
+             and .tagName == $tag and .name == $tag and (.body | contains($marker))' \
+            <<<"$release_json" >/dev/null; then
+            echo "::error::Release ${tag} is not this workflow's owned non-prerelease release"
+            exit 1
+          fi
+          if jq -e '.isDraft == true' <<<"$release_json" >/dev/null; then
+            gh release edit "$tag" --draft=false --prerelease=false
+          else
+            echo "Release ${tag} is already public; continuing the interrupted publication"
+          fi
 
   homebrew:
-    needs: binaries
+    needs: publish-release
     runs-on: ubuntu-latest
     steps:
       - name: Update Homebrew tap formula
@@ -48,17 +276,19 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${TAP_TOKEN:-}" ]; then
-            echo "HOMEBREW_TAP_TOKEN not set — skipping Homebrew update"; exit 0
+            echo "::error::HOMEBREW_TAP_TOKEN not set — cannot update Homebrew tap"; exit 1
           fi
           tag="$GITHUB_REF_NAME"; v="${tag#v}"
           base="https://github.com/A3S-Lab/WebView/releases/download/${tag}"
           sha() { curl -fsSL "$base/a3s-webview-${tag}-$1.tar.gz" | sha256sum | cut -d' ' -f1; }
           mac_arm=$(sha aarch64-apple-darwin)
           mac_x86=$(sha x86_64-apple-darwin)
+          lin_arm=$(sha aarch64-unknown-linux-gnu)
+          lin_x86=$(sha x86_64-unknown-linux-gnu)
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/A3S-Lab/homebrew-tap.git" tap
           cat > tap/Formula/a3s-webview.rb <<RB
           class A3sWebview < Formula
-            desc "Native WebView popup helper for the a3s code TUI (RemoteUI)"
+            desc "Native WebView and top-center Agent Island helper for A3S Code"
             homepage "https://github.com/A3S-Lab/WebView"
             version "${v}"
             license "MIT"
@@ -74,15 +304,31 @@ jobs:
               end
             end
 
+            on_linux do
+              depends_on "webkitgtk"
+              on_arm do
+                url "${base}/a3s-webview-${tag}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${lin_arm}"
+              end
+              on_intel do
+                url "${base}/a3s-webview-${tag}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${lin_x86}"
+              end
+            end
+
             def install
               bin.install "a3s-webview"
             end
 
             test do
               assert_match "usage", shell_output("#{bin}/a3s-webview --help")
+              island = shell_output("#{bin}/a3s-webview --agent-island --help 2>&1", 2)
+              assert_match "--snapshot <absolute-path>", island
+              assert_match "--lock-file <absolute-path>", island
             end
           end
           RB
+          ruby -c tap/Formula/a3s-webview.rb
           cd tap
           git config user.email "ci@a3s.dev"
           git config user.name "A3S CI"
