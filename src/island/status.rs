@@ -53,8 +53,8 @@ impl AgentState {
 
     fn attention_rank(self) -> u8 {
         match self {
-            Self::Failed => 0,
-            Self::WaitingApproval | Self::WaitingInput => 1,
+            Self::WaitingApproval | Self::WaitingInput => 0,
+            Self::Failed => 1,
             Self::Planning | Self::Working => 2,
             Self::Cancelled => 3,
             Self::Unknown => 4,
@@ -293,7 +293,7 @@ impl Snapshot {
                 activity.confidence.evidence_rank(),
             )
         });
-        let (headline, detail) = presentation_text(self.activities.len(), primary);
+        let (headline, detail) = presentation_text(primary);
         let primary_status = primary
             .map(|activity| activity.state.presentation())
             .unwrap_or_else(|| AgentState::Idle.presentation());
@@ -305,6 +305,8 @@ impl Snapshot {
         });
         let metrics = RenderMetrics::from_activities(&self.activities);
         let attention_keys = attention_keys(&self.activities);
+        let primary_child_progress =
+            primary.and_then(|activity| child_progress(&self.activities, &activity.id));
         let activities = self
             .activities
             .iter()
@@ -349,6 +351,11 @@ impl Snapshot {
             headline,
             detail,
             primary_agent: primary.map(|activity| activity.agent.as_str()),
+            primary_workspace: primary.and_then(|activity| activity.workspace.as_deref()),
+            primary_reason: primary.and_then(|activity| activity.reason.as_deref()),
+            primary_inferred: primary
+                .is_some_and(|activity| activity.confidence != AgentConfidence::Exact),
+            primary_child_progress,
             status: primary_status.label,
             tone: primary_status.tone,
             glyph: primary_status.glyph,
@@ -417,6 +424,10 @@ struct RenderSnapshot<'a> {
     headline: String,
     detail: String,
     primary_agent: Option<&'a str>,
+    primary_workspace: Option<&'a str>,
+    primary_reason: Option<&'a str>,
+    primary_inferred: bool,
+    primary_child_progress: Option<RenderChildProgress>,
     status: &'static str,
     tone: &'static str,
     glyph: &'static str,
@@ -569,7 +580,7 @@ fn attention_key(activity: &Activity, token: Option<&str>) -> String {
     format!("attention-v1-{hash:016x}")
 }
 
-fn presentation_text(count: usize, primary: Option<&Activity>) -> (String, String) {
+fn presentation_text(primary: Option<&Activity>) -> (String, String) {
     let Some(primary) = primary else {
         return (
             "No active agents".to_string(),
@@ -577,20 +588,15 @@ fn presentation_text(count: usize, primary: Option<&Activity>) -> (String, Strin
         );
     };
     let state = primary.state.presentation().label;
-    if count == 1 {
-        let headline = primary
-            .task
-            .clone()
-            .unwrap_or_else(|| primary.agent.clone());
-        let detail = match &primary.workspace {
-            Some(workspace) => format!("{state} · {workspace}"),
-            None => state.to_string(),
-        };
-        (headline, detail)
-    } else {
-        let detail = primary.task.clone().unwrap_or_else(|| state.to_string());
-        (format!("{count} agents · {state}"), detail)
-    }
+    let headline = primary
+        .task
+        .clone()
+        .unwrap_or_else(|| primary.agent.clone());
+    let detail = primary
+        .workspace
+        .clone()
+        .unwrap_or_else(|| state.to_string());
+    (headline, detail)
 }
 
 pub(crate) fn read_snapshot(path: &Path, now_ms: u64) -> Result<Snapshot, String> {
@@ -878,8 +884,8 @@ mod tests {
         let rendered: serde_json::Value =
             serde_json::from_str(&snapshot.render_json().unwrap()).unwrap();
 
-        assert_eq!(rendered["headline"], "2 agents · Process detected");
-        assert_eq!(rendered["detail"], "active process");
+        assert_eq!(rendered["headline"], "active process");
+        assert_eq!(rendered["detail"], "Process detected");
         assert_eq!(rendered["tone"], "inferred");
         assert!(snapshot.has_visible_activity());
     }

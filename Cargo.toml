@@ -1,6 +1,6 @@
 [package]
 name = "a3s-webview"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "Native RemoteUI, local-report, and top-center Agent Island windows for A3S Code"
 license = "MIT"

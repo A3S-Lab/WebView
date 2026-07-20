@@ -19,8 +19,8 @@ pub(super) const ISLAND_STYLE: &str = r#"
       position: absolute;
       top: 32px;
       left: 50%;
-      width: 392px;
-      height: 60px;
+      width: 480px;
+      height: 72px;
       padding: 1px;
       opacity: 1;
       transform: translate3d(-50%, 0, 0) scale(1);
@@ -28,7 +28,7 @@ pub(super) const ISLAND_STYLE: &str = r#"
       overflow: visible;
       color: rgba(255,255,255,.96);
       background: rgba(255,255,255,.105);
-      border-radius: 30px;
+      border-radius: 36px;
       box-shadow: 0 6px 18px rgba(0,0,0,.34);
       cursor: default;
       transition: width var(--island-resize-duration) var(--island-motion-ease),
@@ -68,7 +68,7 @@ pub(super) const ISLAND_STYLE: &str = r#"
     #island::before {
       z-index: -1;
       inset: -7px;
-      border-radius: 37px;
+      border-radius: 43px;
       background: linear-gradient(
         115deg,
         #38d8ff,
@@ -230,7 +230,7 @@ pub(super) const ISLAND_STYLE: &str = r#"
       height: 100%;
       overflow: hidden;
       background: rgba(3,3,5,.985);
-      border-radius: 28px;
+      border-radius: 34px;
       box-shadow: inset 0 1px rgba(255,255,255,.035);
       transition: border-radius var(--island-resize-duration) var(--island-motion-ease);
       contain: layout paint style;
@@ -245,12 +245,12 @@ pub(super) const ISLAND_STYLE: &str = r#"
         inset 0 0 0 1px rgba(255,196,91,.075);
     }
     .summary {
-      height: 57px;
+      height: 69px;
       display: grid;
-      grid-template-columns: 30px minmax(0,1fr) 152px;
+      grid-template-columns: 30px minmax(0,1fr) 176px;
       align-items: center;
-      column-gap: 8px;
-      padding: 0 11px 0 9px;
+      column-gap: 10px;
+      padding: 0 13px 0 11px;
       cursor: pointer;
     }
     .summary-copy { min-width: 0; line-height: 1.08; }
@@ -261,7 +261,7 @@ pub(super) const ISLAND_STYLE: &str = r#"
     }
     .headline {
       color: #f7f7f8;
-      font-size: 12.5px;
+      font-size: 13.25px;
       font-weight: 680;
       letter-spacing: -.01em;
     }
@@ -270,13 +270,13 @@ pub(super) const ISLAND_STYLE: &str = r#"
       display: flex;
       align-items: center;
       gap: 4px;
-      margin-top: 4px;
+      margin-top: 5px;
     }
     .compact-agent {
       flex: 0 1 auto;
-      max-width: 72px;
+      max-width: 82px;
       color: #b0b0ba;
-      font-size: 9.75px;
+      font-size: 10.25px;
       font-weight: 620;
     }
     .context-separator {
@@ -288,14 +288,16 @@ pub(super) const ISLAND_STYLE: &str = r#"
       min-width: 0;
       flex: 1;
       color: #92929d;
-      font-size: 9.75px;
+      font-size: 10.25px;
       font-weight: 520;
     }
+    .detail.attention-context { color: #d8bd83; }
+    .detail.inferred-context { color: #8f98a8; }
     .summary-tail {
       min-width: 0;
       display: grid;
       align-content: center;
-      row-gap: 5px;
+      row-gap: 6px;
     }
     .compact-primary,
     .compact-overview {
@@ -307,9 +309,9 @@ pub(super) const ISLAND_STYLE: &str = r#"
     }
     .compact-primary { gap: 7px; }
     .compact-overview {
-      gap: 5px;
+      gap: 6px;
       color: #757580;
-      font-size: 8.5px;
+      font-size: 9px;
       font-weight: 610;
       font-variant-numeric: tabular-nums;
     }
@@ -319,7 +321,7 @@ pub(super) const ISLAND_STYLE: &str = r#"
       align-items: center;
       gap: 5px;
       color: #9da5b4;
-      font-size: 9.5px;
+      font-size: 10px;
       font-weight: 680;
     }
     .compact-status::before {
@@ -342,34 +344,35 @@ pub(super) const ISLAND_STYLE: &str = r#"
       flex: none;
       min-width: 34px;
       color: #a0a0aa;
-      font-size: 9px;
+      font-size: 9.5px;
       font-weight: 620;
       text-align: right;
       font-variant-numeric: tabular-nums;
     }
-    .compact-running { color: #82cda0; }
-    .compact-total { color: #777782; }
+    .compact-stats {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 5px;
+      overflow: hidden;
+    }
+    .compact-stat {
+      flex: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .compact-stat.partial { color: #efbb62; }
+    .compact-stat.attention { color: #ffd67d; }
+    .compact-stat.running { color: #82cda0; }
+    .compact-stat.progress { color: #91a9ef; }
+    .compact-stat.recent { color: #9c9ca8; }
+    .compact-stat.total { color: #777782; }
     .metric-separator {
       color: #4f4f59;
       font-size: 7px;
     }
-    .compact-attention {
-      display: none;
-      flex: none;
-      min-width: 20px;
-      height: 17px;
-      padding: 0 6px;
-      border: 1px solid rgba(255,199,92,.34);
-      border-radius: 9px;
-      color: #ffd67d;
-      background: rgba(177,112,25,.17);
-      font-size: 8.75px;
-      font-weight: 750;
-      line-height: 15px;
-      text-align: center;
-      font-variant-numeric: tabular-nums;
-    }
-    .compact-attention.visible { display: inline-block; }
     .chevron {
       flex: none;
       width: 13px;
@@ -382,10 +385,10 @@ pub(super) const ISLAND_STYLE: &str = r#"
     #island.expanded .chevron { transform: rotate(180deg); }
     .panel {
       position: absolute;
-      top: 57px;
+      top: 69px;
       left: 0;
       width: 560px;
-      height: 303px;
+      height: 291px;
       display: flex;
       flex-direction: column;
       padding: 3px 9px 10px;

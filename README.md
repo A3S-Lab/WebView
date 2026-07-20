@@ -50,16 +50,22 @@ a3s-webview --agent-island --snapshot <absolute-path> --lock-file <absolute-path
 
 The island is implemented by this standalone Tao/Wry helper. It embeds offline
 HTML, CSS, and JavaScript in the platform WebView; it does not render through
-`a3s-tui`, the A3S GUI crate, React, or Next.js. The compact `392 × 60` pill
+`a3s-tui`, the A3S GUI crate, React, or Next.js. The compact `480 × 72` pill
 expands to a bounded, scrollable `560 × 360` detail surface. Its transparent
 native window adds 48 logical pixels of horizontal and 32 pixels of vertical
-bleed on every side (`488 × 124` collapsed and `656 × 424` expanded). The
+bleed on every side (`576 × 136` collapsed and `656 × 424` expanded). The
 wide aura fades to transparent inside that bleed instead of exposing the
 native window's rectangular clipping boundary. The collapsed surface shows
-the primary agent, task context, state, live elapsed time, running/total
-counts, and needs-you count. Automatic attention expansion does not steal
-keyboard focus; the expanded window becomes focusable so a user can operate
-controls and type a reply directly in the island.
+the primary task, agent, workspace or actionable reason, state, and live
+elapsed time. Its bounded metric tail shows at most three items, prioritized
+as partial-data health, needs-you count, running count, direct-child progress,
+recent outcomes, then total agents. This keeps urgent and in-flight evidence
+visible without turning the compact surface into the full activity panel.
+When several rows need attention, an approval or input request that can
+unblock work becomes the primary compact row ahead of a retained failure.
+Automatic attention expansion does not steal keyboard focus; the expanded
+window becomes focusable so a user can operate controls and type a reply
+directly in the island.
 
 The user preference defaults to enabled and is persisted by A3S Code.
 `/island on|off|status` controls it from the TUI. The expanded view also offers
