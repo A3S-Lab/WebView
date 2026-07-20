@@ -2,8 +2,8 @@ use tao::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use tao::event_loop::{EventLoop, EventLoopWindowTarget};
 use tao::window::{Window, WindowBuilder};
 
-pub(crate) const COLLAPSED_WIDTH: f64 = 392.0;
-pub(crate) const COLLAPSED_HEIGHT: f64 = 60.0;
+pub(crate) const COLLAPSED_WIDTH: f64 = 480.0;
+pub(crate) const COLLAPSED_HEIGHT: f64 = 72.0;
 pub(crate) const EXPANDED_WIDTH: f64 = 560.0;
 pub(crate) const EXPANDED_HEIGHT: f64 = 360.0;
 pub(crate) const HORIZONTAL_GLOW_INSET: f64 = 48.0;
@@ -398,8 +398,8 @@ mod tests {
             },
             IslandSize::Collapsed,
         );
-        assert_eq!(layout.size, PhysicalSize::new(976, 248));
-        assert_eq!(layout.position, PhysicalPosition::new(1024, -52));
+        assert_eq!(layout.size, PhysicalSize::new(1152, 272));
+        assert_eq!(layout.position, PhysicalPosition::new(936, -52));
     }
 
     #[test]
@@ -435,7 +435,7 @@ mod tests {
     fn glow_bleed_contains_the_collapsed_aura_before_native_clipping() {
         let size = IslandSize::Collapsed.logical_size();
 
-        assert_eq!(size, LogicalSize::new(488.0, 124.0));
+        assert_eq!(size, LogicalSize::new(576.0, 136.0));
         const {
             assert!(HORIZONTAL_GLOW_INSET >= 46.0);
             assert!(VERTICAL_GLOW_INSET >= 30.0);

@@ -158,3 +158,55 @@ fn rendered_parent_progress_counts_direct_exact_settled_children() {
     );
     assert!(rendered["activities"][1]["child_progress"].is_null());
 }
+
+#[test]
+fn compact_primary_keeps_actionable_task_context_and_progress_with_multiple_agents() {
+    let bytes = snapshot_json(
+        10_000,
+        r#"[
+            {"id":"parent","agent":"a3s-code","workspace":"A3S-Lab/WebView","task":"Approve the release deployment","reason":"Permission is required before publishing.","state":"waiting_approval","confidence":"exact","started_at_ms":4000},
+            {"id":"done","parent_id":"parent","agent":"reviewer","state":"completed","confidence":"exact","started_at_ms":5000,"finished_at_ms":8000},
+            {"id":"live","parent_id":"parent","agent":"tester","state":"working","confidence":"exact","started_at_ms":6000},
+            {"id":"other","agent":"codex","task":"active process","state":"unknown","confidence":"process","started_at_ms":3000}
+        ]"#,
+    );
+    let snapshot = Snapshot::parse(&bytes, 10_000).unwrap();
+    let rendered: serde_json::Value =
+        serde_json::from_str(&snapshot.render_json().unwrap()).unwrap();
+
+    assert_eq!(rendered["headline"], "Approve the release deployment");
+    assert_eq!(rendered["detail"], "A3S-Lab/WebView");
+    assert_eq!(rendered["primary_agent"], "a3s-code");
+    assert_eq!(rendered["primary_workspace"], "A3S-Lab/WebView");
+    assert_eq!(
+        rendered["primary_reason"],
+        "Permission is required before publishing."
+    );
+    assert_eq!(rendered["primary_inferred"], false);
+    assert_eq!(
+        rendered["primary_child_progress"],
+        serde_json::json!({"settled": 1, "total": 2})
+    );
+}
+
+#[test]
+fn compact_primary_prefers_an_unblocking_request_over_a_retained_failure() {
+    let bytes = snapshot_json(
+        10_000,
+        r#"[
+            {"id":"failed","agent":"reviewer","task":"Previous review failed","state":"failed","confidence":"exact"},
+            {"id":"approval","agent":"a3s-code","task":"Approve the corrected release","reason":"The corrected release is ready for approval.","state":"waiting_approval","confidence":"exact"}
+        ]"#,
+    );
+    let snapshot = Snapshot::parse(&bytes, 10_000).unwrap();
+    let rendered: serde_json::Value =
+        serde_json::from_str(&snapshot.render_json().unwrap()).unwrap();
+
+    assert_eq!(rendered["headline"], "Approve the corrected release");
+    assert_eq!(rendered["primary_agent"], "a3s-code");
+    assert_eq!(rendered["status"], "Approval needed");
+    assert_eq!(
+        rendered["primary_reason"],
+        "The corrected release is ready for approval."
+    );
+}

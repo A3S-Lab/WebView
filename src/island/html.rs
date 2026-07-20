@@ -37,11 +37,8 @@ const DOCUMENT_BODY: &str = r#"
             <span class="compact-duration duration" id="compact-duration">—</span>
           </div>
           <div class="compact-overview">
-            <span class="compact-running" id="compact-running">0 running</span>
-            <span class="metric-separator" aria-hidden="true">·</span>
-            <span class="compact-total" id="compact-total">0 total</span>
-            <span class="compact-attention" id="compact-attention"
-                  aria-label="Agents need you"></span>
+            <span class="compact-stats" id="compact-stats"
+                  aria-label="No agent metrics"></span>
             <span class="chevron" aria-hidden="true">⌄</span>
           </div>
         </div>
@@ -144,7 +141,7 @@ mod tests {
         assert!(html.contains("beginOpen"));
         assert!(html.contains("expandAfterOpen"));
         assert!(html.contains("pendingActivityRender"));
-        assert!(html.contains("width: 560px;\n      height: 303px;"));
+        assert!(html.contains("width: 560px;\n      height: 291px;"));
         assert!(html.contains("post('close-complete')"));
         assert!(html.contains("beginClose"));
         assert!(html.contains("freezeResizeForClose"));
@@ -239,26 +236,58 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_summary_exposes_primary_state_time_and_agent_counts() {
+    fn collapsed_summary_exposes_prioritized_context_progress_and_counts() {
         let html = html();
         for id in [
             "compact-agent",
             "compact-status",
             "compact-duration",
-            "compact-running",
-            "compact-total",
-            "compact-attention",
+            "compact-stats",
         ] {
             assert!(html.contains(&format!("id=\"{id}\"")));
         }
-        assert!(html.contains("width: 392px"));
-        assert!(html.contains("height: 60px"));
+        assert!(html.contains("width: 480px"));
+        assert!(html.contains("height: 72px"));
         assert!(html.contains("data.primary_agent"));
+        assert!(html.contains("data.primary_workspace"));
+        assert!(html.contains("data.primary_reason"));
+        assert!(html.contains("data.primary_child_progress"));
         assert!(html.contains("data.status"));
         assert!(html.contains("data.primary_started_at_ms"));
         assert!(html.contains("data.primary_finished_at_ms"));
-        assert!(html.contains("`${metrics.running} running`"));
+        assert!(html.contains("function compactMetricParts"));
+        assert!(html.contains("`${progress.settled}/${progress.total} settled`"));
+        assert!(html.contains("`${metrics.recent} recent`"));
         assert!(html.contains("`${metrics.total} total`"));
+        assert!(html.contains("compactStats.scrollWidth > compactStats.clientWidth"));
+        assert!(html.contains("visibleParts.pop()"));
+
+        let metric_parts = html
+            .split_once("function compactMetricParts")
+            .and_then(|(_, tail)| tail.split_once("function syncCompactMetrics"))
+            .map(|(body, _)| body)
+            .expect("compact metric hierarchy");
+        let partial = metric_parts
+            .find("Partial data")
+            .expect("partial-data priority");
+        let attention = metric_parts.find("needs you").expect("attention priority");
+        let running = metric_parts
+            .find("`${metrics.running} running`")
+            .expect("running priority");
+        let progress = metric_parts
+            .find("`${progress.settled}/${progress.total} settled`")
+            .expect("progress priority");
+        let recent = metric_parts
+            .find("`${metrics.recent} recent`")
+            .expect("recent fallback");
+        let total = metric_parts
+            .find("`${metrics.total} total`")
+            .expect("total fallback");
+        assert!(partial < attention);
+        assert!(attention < running);
+        assert!(running < progress);
+        assert!(progress < recent);
+        assert!(recent < total);
     }
 
     #[test]

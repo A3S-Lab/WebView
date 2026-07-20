@@ -11,9 +11,7 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
     const compactAgent = document.getElementById('compact-agent');
     const compactStatus = document.getElementById('compact-status');
     const compactDuration = document.getElementById('compact-duration');
-    const compactRunning = document.getElementById('compact-running');
-    const compactTotal = document.getElementById('compact-total');
-    const compactAttention = document.getElementById('compact-attention');
+    const compactStats = document.getElementById('compact-stats');
     const panelSummary = document.getElementById('panel-summary');
     const activities = document.getElementById('activities');
     const degraded = document.getElementById('degraded');
@@ -239,25 +237,90 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
       };
     }
 
-    function syncMetrics(metrics) {
+    function compactMetricParts(data, metrics) {
+      const parts = [];
+      if (data.degraded === true) {
+        parts.push({ label: 'Partial data', tone: 'partial' });
+      }
+      if (metrics.needs_attention > 0) {
+        parts.push({
+          label: metrics.needs_attention === 1
+            ? '1 needs you'
+            : `${metrics.needs_attention} need you`,
+          tone: 'attention'
+        });
+      }
+      if (metrics.running > 0) {
+        parts.push({ label: `${metrics.running} running`, tone: 'running' });
+      }
+      const source = data.primary_child_progress;
+      if (source && typeof source === 'object') {
+        const total = finiteCount(source.total);
+        const progress = {
+          settled: Math.min(total, finiteCount(source.settled)),
+          total
+        };
+        if (progress.total > 0) {
+          parts.push({
+            label: `${progress.settled}/${progress.total} settled`,
+            tone: 'progress'
+          });
+        }
+      }
+      if (metrics.recent > 0) {
+        parts.push({ label: `${metrics.recent} recent`, tone: 'recent' });
+      }
+      if (metrics.total > 0) {
+        parts.push({ label: `${metrics.total} total`, tone: 'total' });
+      }
+      if (parts.length > 3) parts.length = 3;
+      return parts;
+    }
+
+    function syncCompactMetrics(data, metrics) {
+      const visibleParts = compactMetricParts(data, metrics);
+      const draw = () => {
+        compactStats.replaceChildren();
+        visibleParts.forEach((part, index) => {
+          if (index > 0) {
+            const separator = document.createElement('span');
+            separator.className = 'metric-separator';
+            separator.setAttribute('aria-hidden', 'true');
+            separator.textContent = '·';
+            compactStats.append(separator);
+          }
+          const node = document.createElement('span');
+          node.className = `compact-stat ${part.tone}`;
+          node.textContent = part.label;
+          compactStats.append(node);
+        });
+      };
+      draw();
+      while (
+        compactStats.scrollWidth > compactStats.clientWidth
+        && visibleParts.length > 1
+      ) {
+        visibleParts.pop();
+        draw();
+      }
+      const labels = visibleParts.map(part => part.label);
+      compactStats.setAttribute(
+        'aria-label',
+        labels.length ? labels.join(', ') : 'No agent metrics'
+      );
+      return labels;
+    }
+
+    function syncMetrics(data, metrics) {
       countNodes.all.textContent = String(metrics.total);
       countNodes.needs_attention.textContent = String(metrics.needs_attention);
       countNodes.running.textContent = String(metrics.running);
       countNodes.recent.textContent = String(metrics.recent);
-      compactRunning.textContent = `${metrics.running} running`;
-      compactRunning.setAttribute('aria-label', plural(metrics.running, 'agent') + ' running');
-      compactTotal.textContent = `${metrics.total} total`;
-      compactTotal.setAttribute('aria-label', plural(metrics.total, 'agent') + ' total');
       const summaryParts = [plural(metrics.total, 'agent')];
       if (metrics.inferred > 0) summaryParts.push(`${metrics.inferred} detected`);
       panelSummary.textContent = summaryParts.join(' · ');
-      compactAttention.textContent = `! ${metrics.needs_attention}`;
-      compactAttention.classList.toggle('visible', metrics.needs_attention > 0);
-      compactAttention.setAttribute(
-        'aria-label',
-        plural(metrics.needs_attention, 'agent') + ' need you'
-      );
       root.classList.toggle('has-attention', metrics.needs_attention > 0);
+      return syncCompactMetrics(data, metrics);
     }
 
     function syncCompactPrimary(data) {
@@ -265,6 +328,21 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
       titledText(compactAgent, data.primary_agent, 'Agent');
       titledText(compactStatus, data.status, 'Idle');
       compactStatus.className = `compact-status ${tone}`;
+      const actionableReason = ['attention', 'danger'].includes(tone)
+        && typeof data.primary_reason === 'string'
+        && data.primary_reason.length
+        ? data.primary_reason
+        : '';
+      const context = actionableReason
+        || data.primary_workspace
+        || data.detail
+        || (data.primary_inferred === true ? 'Process evidence' : 'Local task');
+      titledText(detail, context, 'Waiting for activity');
+      detail.classList.toggle('attention-context', Boolean(actionableReason));
+      detail.classList.toggle(
+        'inferred-context',
+        !actionableReason && data.primary_inferred === true
+      );
 
       if (Number.isFinite(data.primary_started_at_ms) && data.primary_started_at_ms > 0) {
         compactDuration.dataset.started = String(data.primary_started_at_ms);
@@ -705,15 +783,20 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
       model = data;
       const metrics = normalizedMetrics(data);
       titledText(headline, data.headline, 'No active agents');
-      titledText(detail, data.detail, 'Waiting for activity');
       degraded.classList.toggle('visible', data.degraded === true);
       root.classList.toggle('active-work', data.active_work === true);
       summaryRobot.replaceChildren(robotNode(data.vendor, data.tone));
       syncCompactPrimary(data);
-      syncMetrics(metrics);
+      const compactMetricLabels = syncMetrics(data, metrics);
       summary.setAttribute(
         'aria-label',
-        `${data.status || 'Idle'}. ${metrics.running} running, ${metrics.total} total. Show agent activity`
+        [
+          data.headline || 'No active agents',
+          data.primary_agent || 'Agent',
+          data.status || 'Idle',
+          ...compactMetricLabels,
+          'Show agent activity'
+        ].join('. ')
       );
       handleAttention(data);
       if (root.classList.contains('resizing') || opening || closing) {
