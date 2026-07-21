@@ -1,12 +1,12 @@
 [package]
 name = "a3s-webview"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
-description = "Native WebView popup helper for the a3s code TUI (RemoteUI) — renders A3S OS viewUrls in a sized window"
+description = "Native RemoteUI, local-report, and top-center Agent Island windows for A3S Code"
 license = "MIT"
 repository = "https://github.com/A3S-Lab/WebView"
 homepage = "https://github.com/A3S-Lab/a3s"
-keywords = ["a3s", "webview", "tui", "remoteui"]
+keywords = ["a3s", "webview", "tui", "remoteui", "desktop"]
 categories = ["command-line-utilities", "gui"]
 
 [[bin]]
@@ -16,8 +16,11 @@ path = "src/main.rs"
 [dependencies]
 # macOS uses the built-in WKWebView (no system deps); Linux needs WebKitGTK,
 # Windows the WebView2 runtime (ships with Win10+).
-wry = "0.55"
+wry = { version = "0.55", features = ["transparent"] }
 tao = "0.35"
+fs2 = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # macOS-only: native titlebar back/forward/reload buttons via AppKit. These are
 # the exact versions tao/wry already lock, so nothing new is unified.
@@ -34,8 +37,21 @@ objc2-app-kit = { version = "0.3", features = [
     "NSViewController",
     "NSTitlebarAccessoryViewController",
     "NSWindow",
+    "NSScreen",
     "NSLayoutConstraint",
 ] }
+
+# Tao already applies WS_EX_NOACTIVATE for non-focusable windows. The island
+# additionally uses TOOLWINDOW and a no-activate topmost show so it never enters
+# the taskbar / Alt-Tab list while remaining clickable.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.release]
 opt-level = "z"
