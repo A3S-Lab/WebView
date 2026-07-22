@@ -67,6 +67,7 @@ enum IslandEvent {
     Expand,
     CollapseComplete,
     CloseComplete,
+    DragWindow,
     Disable,
     Control(control::ControlSubmission),
 }
@@ -78,6 +79,7 @@ fn parse_ipc(body: &str) -> Option<IslandEvent> {
         "expand" => Some(IslandEvent::Expand),
         "collapse-complete" => Some(IslandEvent::CollapseComplete),
         "close-complete" => Some(IslandEvent::CloseComplete),
+        "drag-window" => Some(IslandEvent::DragWindow),
         "disable" => Some(IslandEvent::Disable),
         _ => control::parse_submission(body).map(IslandEvent::Control),
     }
@@ -120,7 +122,7 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
     configure_webview_resize_behavior(&webview);
     // Wry may adjust its host frame while attaching WKWebView. Reassert the
     // exact physical top-center frame after attachment and before first show.
-    window::resize_and_center(&window, IslandSize::Collapsed);
+    let mut screen_profile = window::resize_and_center(&window, IslandSize::Collapsed);
     let mut webview_bounds = None;
     sync_webview_bounds(&webview, &window, &mut webview_bounds)?;
     window::configure_native_window(&window, false)?;
@@ -133,6 +135,7 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
     let mut web_ready = false;
     let mut presented = false;
     let mut expanded = false;
+    let mut user_positioned = false;
     let mut closing = false;
     let mut close_deadline = None;
     let singleton_guard = singleton;
@@ -147,6 +150,12 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
         match event {
             Event::UserEvent(IslandEvent::Ready) => {
                 web_ready = true;
+                if let Err(error) = apply_screen_profile(&webview, screen_profile, !user_positioned)
+                {
+                    eprintln!("a3s-webview: agent island: {error}");
+                    *control_flow = ControlFlow::Exit;
+                    return;
+                }
                 let should_close = preference::is_disabled_for_snapshot(&preference_snapshot)
                     || snapshots.poll(&webview, true, now);
                 if should_close {
@@ -171,11 +180,22 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                 // Enlarge the transparent host before asking WebKit to morph the
                 // visible island. Animating both layers independently produces
                 // mismatched curves and intermittent clipping.
-                window::resize_and_center(&window, IslandSize::Expanded);
+                screen_profile = if user_positioned {
+                    window::resize_preserving_position(
+                        &window,
+                        IslandSize::Expanded,
+                        screen_profile,
+                    )
+                } else {
+                    window::resize_and_center(&window, IslandSize::Expanded)
+                };
                 next_recenter = now + RECENTER_INTERVAL;
                 if let Err(error) =
                     sync_webview_bounds_after_native_resize(&webview, &window, &mut webview_bounds)
                         .and_then(|()| window::configure_native_window(&window, true))
+                        .and_then(|()| {
+                            apply_screen_profile(&webview, screen_profile, !user_positioned)
+                        })
                 {
                     eprintln!("a3s-webview: agent island: {error}");
                     *control_flow = ControlFlow::Exit;
@@ -191,7 +211,15 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
             Event::UserEvent(IslandEvent::CollapseComplete) if !closing => {
                 if expanded {
                     expanded = false;
-                    window::resize_and_center(&window, IslandSize::Collapsed);
+                    screen_profile = if user_positioned {
+                        window::resize_preserving_position(
+                            &window,
+                            IslandSize::Collapsed,
+                            screen_profile,
+                        )
+                    } else {
+                        window::resize_and_center(&window, IslandSize::Collapsed)
+                    };
                     next_recenter = now + RECENTER_INTERVAL;
                     if let Err(error) = sync_webview_bounds_after_native_resize(
                         &webview,
@@ -199,6 +227,7 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                         &mut webview_bounds,
                     )
                     .and_then(|()| window::configure_native_window(&window, false))
+                    .and_then(|()| apply_screen_profile(&webview, screen_profile, !user_positioned))
                     {
                         eprintln!("a3s-webview: agent island: {error}");
                         *control_flow = ControlFlow::Exit;
@@ -217,6 +246,31 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
             }
             Event::UserEvent(IslandEvent::CloseComplete) if closing => {
                 *control_flow = ControlFlow::Exit;
+            }
+            Event::UserEvent(IslandEvent::DragWindow) if presented && !closing => {
+                let was_user_positioned = user_positioned;
+                user_positioned = true;
+                if let Err(error) = window::drag_window(&window) {
+                    user_positioned = was_user_positioned;
+                    eprintln!("a3s-webview: agent island: {error}");
+                } else {
+                    screen_profile = window::resize_preserving_position(
+                        &window,
+                        if expanded {
+                            IslandSize::Expanded
+                        } else {
+                            IslandSize::Collapsed
+                        },
+                        screen_profile,
+                    );
+                }
+                if let Err(error) = sync_webview_bounds(&webview, &window, &mut webview_bounds)
+                    .and_then(|()| apply_screen_profile(&webview, screen_profile, !user_positioned))
+                {
+                    eprintln!("a3s-webview: agent island: {error}");
+                    *control_flow = ControlFlow::Exit;
+                }
+                next_recenter = now + RECENTER_INTERVAL;
             }
             Event::UserEvent(IslandEvent::Disable) if !closing => {
                 match preference::disable_for_snapshot(&preference_snapshot) {
@@ -315,15 +369,20 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                     next_poll = now + POLL_INTERVAL;
                 }
                 if now >= next_recenter {
-                    window::resize_and_center(
-                        &window,
-                        if expanded {
-                            IslandSize::Expanded
-                        } else {
-                            IslandSize::Collapsed
-                        },
-                    );
+                    if !user_positioned {
+                        screen_profile = window::resize_and_center(
+                            &window,
+                            if expanded {
+                                IslandSize::Expanded
+                            } else {
+                                IslandSize::Collapsed
+                            },
+                        );
+                    }
                     if let Err(error) = sync_webview_bounds(&webview, &window, &mut webview_bounds)
+                        .and_then(|()| {
+                            apply_screen_profile(&webview, screen_profile, !user_positioned)
+                        })
                     {
                         eprintln!("a3s-webview: agent island: {error}");
                         *control_flow = ControlFlow::Exit;
@@ -439,6 +498,16 @@ fn sync_webview_bounds(
         .map_err(|error| format!("resize agent island webview: {error}"))?;
     *current = Some(size);
     Ok(())
+}
+
+fn apply_screen_profile(
+    webview: &wry::WebView,
+    profile: window::ScreenProfile,
+    attached: bool,
+) -> Result<(), String> {
+    webview
+        .evaluate_script(&window::screen_profile_script(profile, attached))
+        .map_err(|error| format!("apply agent island screen profile: {error}"))
 }
 
 fn begin_close_animation(webview: &wry::WebView, now: Instant) -> Result<Instant, String> {
@@ -816,6 +885,7 @@ mod tests {
             parse_ipc("close-complete"),
             Some(IslandEvent::CloseComplete)
         );
+        assert_eq!(parse_ipc("drag-window"), Some(IslandEvent::DragWindow));
         assert_eq!(parse_ipc("disable"), Some(IslandEvent::Disable));
         assert!(matches!(
             parse_ipc(

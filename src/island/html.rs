@@ -43,6 +43,10 @@ const DOCUMENT_BODY: &str = r#"
           </div>
         </div>
       </section>
+      <button class="drag-handle" id="drag-handle" type="button"
+              aria-label="Move Agent Island" title="Drag to move Agent Island">
+        <span aria-hidden="true"></span>
+      </button>
       <section class="panel" id="panel" aria-label="Agent activity details"
                aria-hidden="true" inert>
         <div class="rule"></div>
@@ -126,6 +130,7 @@ mod tests {
         assert!(html.contains("window.a3sIsland"));
         assert!(html.contains("syncPanelAccess"));
         assert!(html.contains("aria-hidden=\"true\" inert"));
+        assert!(html.contains("post('drag-window')"));
     }
 
     #[test]
@@ -299,6 +304,31 @@ mod tests {
         assert!(html.contains("controlResult"));
         assert!(html.contains("summary.addEventListener('click'"));
         assert!(!html.contains("root.addEventListener('click'"));
+    }
+
+    #[test]
+    fn macbook_notch_profile_avoids_the_hardware_and_fuses_to_the_top_edge() {
+        let html = html();
+
+        assert!(html.contains("setScreenProfile"));
+        assert!(html.contains("--notch-left"));
+        assert!(html.contains("--notch-width"));
+        assert!(html.contains("#island.notched .summary"));
+        assert!(html.contains("border-radius: 0 0 var(--island-radius)"));
+        assert!(html.contains("root.classList.toggle('notched'"));
+        assert!(html.contains("root.classList.add('screen-ready')"));
+    }
+
+    #[test]
+    fn dedicated_drag_handle_does_not_toggle_summary_actions() {
+        let html = html();
+
+        assert!(html.contains("id=\"drag-handle\""));
+        assert!(html.contains("aria-label=\"Move Agent Island\""));
+        assert!(html.contains("dragHandle.addEventListener('mousedown'"));
+        assert!(html.contains("dragHandle.addEventListener('touchstart'"));
+        assert!(html.contains("event.preventDefault()"));
+        assert!(html.contains("event.stopPropagation()"));
     }
 
     #[test]

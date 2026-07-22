@@ -16,6 +16,7 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
     const activities = document.getElementById('activities');
     const degraded = document.getElementById('degraded');
     const turnOff = document.getElementById('turn-off');
+    const dragHandle = document.getElementById('drag-handle');
     const filterButtons = Array.from(document.querySelectorAll('.filter'));
     const countNodes = {
       all: document.getElementById('count-all'),
@@ -108,6 +109,33 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
       collapseCompletePosted = true;
       post('collapse-complete');
     };
+
+    function setScreenProfile(profile) {
+      const dimension = (value, fallback, minimum, maximum) =>
+        Number.isFinite(value) ? Math.min(maximum, Math.max(minimum, value)) : fallback;
+      const collapsedWidth = dimension(profile && profile.collapsedWidth, 480, 240, 1400);
+      const expandedWidth = dimension(
+        profile && profile.expandedWidth,
+        Math.max(560, collapsedWidth),
+        collapsedWidth,
+        1400
+      );
+      const notchLeft = dimension(profile && profile.notchLeft, 0, 0, collapsedWidth);
+      const notchWidth = dimension(
+        profile && profile.notchWidth,
+        0,
+        0,
+        Math.max(0, collapsedWidth - notchLeft)
+      );
+      const notchHeight = dimension(profile && profile.notchHeight, 0, 0, 120);
+      root.style.setProperty('--collapsed-width', `${collapsedWidth}px`);
+      root.style.setProperty('--expanded-width', `${expandedWidth}px`);
+      root.style.setProperty('--notch-left', `${notchLeft}px`);
+      root.style.setProperty('--notch-width', `${notchWidth}px`);
+      root.style.setProperty('--notch-height', `${notchHeight}px`);
+      root.classList.toggle('notched', profile && profile.notched === true);
+      root.classList.add('screen-ready');
+    }
 
     function robotNode(vendor, tone) {
       const robot = document.createElement('div');
@@ -885,6 +913,21 @@ pub(super) const ISLAND_SCRIPT_END: &str = r#"
       turnOff.textContent = 'Closing…';
       post('disable');
     });
+    dragHandle.addEventListener('mousedown', event => {
+      event.stopPropagation();
+      if (event.button !== 0) return;
+      event.preventDefault();
+      post('drag-window');
+    });
+    dragHandle.addEventListener('touchstart', event => {
+      event.stopPropagation();
+      event.preventDefault();
+      post('drag-window');
+    }, { passive: false });
+    dragHandle.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
 
     document.addEventListener('visibilitychange', syncDocumentVisibility);
     if (typeof reducedMotion.addEventListener === 'function') {
@@ -901,6 +944,7 @@ pub(super) const ISLAND_SCRIPT_END: &str = r#"
       update: render,
       controlResult,
       disableResult,
+      setScreenProfile,
       beginOpen,
       setExpanded,
       beginCollapse,

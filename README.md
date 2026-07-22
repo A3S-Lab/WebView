@@ -67,6 +67,20 @@ Automatic attention expansion does not steal keyboard focus; the expanded
 window becomes focusable so a user can operate controls and type a reply
 directly in the island.
 
+On macOS, the helper reads `NSScreen.safeAreaInsets` together with the two
+auxiliary top areas. A centered hardware notch makes the surface start at the
+physical screen edge with square top corners, while compact content is laid out
+in the unobstructed left and right wings. The compact width grows when needed to
+fit the notch, 12 logical pixels of clearance on each side, and two 160-pixel
+content wings; a 212-pixel notch therefore produces a `556 × 72` surface inside
+a `652 × 136` native window. The expanded width is at least `560` pixels and
+also grows if the compact notch-safe width is larger.
+
+A visible handle below the compact summary starts the platform's native window
+drag. After a successful drag, the two-second centering pass no longer moves the
+island, notch-fusion styling is removed, and expand/collapse keeps the moved
+surface's top-center instead of snapping it back to a monitor edge.
+
 The user preference defaults to enabled and is persisted by A3S Code.
 `/island on|off|status` controls it from the TUI. The expanded view also offers
 `Turn off`, which writes the same private opt-out marker before the helper
@@ -137,7 +151,7 @@ never appears in `argv` / `ps`).
 
 | Platform | Backend | Notes |
 |---|---|---|
-| macOS | WKWebView | System framework; native island joins Spaces and full-screen auxiliary windows without entering the Dock. |
+| macOS | WKWebView | System framework; native island joins Spaces and full-screen auxiliary windows without entering the Dock, reads display safe-area geometry for centered notches, and supports native dragging. |
 | Linux | WebKitGTK | Needs `libwebkit2gtk-4.1`; X11 supports top-center/keep-above hints. Standard Wayland may ignore global placement. |
 | Windows | WebView2 | Runtime ships with supported Windows releases; the island stays outside the taskbar and Alt-Tab list, remains non-activating while collapsed, and accepts focus when expanded for direct interaction. |
 

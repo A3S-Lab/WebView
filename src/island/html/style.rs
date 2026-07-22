@@ -16,10 +16,16 @@ pub(super) const ISLAND_STYLE: &str = r#"
     #island {
       --island-resize-duration: 260ms;
       --island-motion-ease: cubic-bezier(.22,1,.36,1);
+      --island-radius: 36px;
+      --collapsed-width: 480px;
+      --expanded-width: 560px;
+      --notch-left: 0px;
+      --notch-width: 0px;
+      --notch-height: 0px;
       position: absolute;
       top: 32px;
       left: 50%;
-      width: 480px;
+      width: var(--collapsed-width);
       height: 72px;
       padding: 1px;
       opacity: 1;
@@ -28,7 +34,7 @@ pub(super) const ISLAND_STYLE: &str = r#"
       overflow: visible;
       color: rgba(255,255,255,.96);
       background: rgba(255,255,255,.105);
-      border-radius: 36px;
+      border-radius: var(--island-radius);
       box-shadow: 0 6px 18px rgba(0,0,0,.34);
       cursor: default;
       transition: width var(--island-resize-duration) var(--island-motion-ease),
@@ -68,7 +74,7 @@ pub(super) const ISLAND_STYLE: &str = r#"
     #island::before {
       z-index: -1;
       inset: -7px;
-      border-radius: 43px;
+      border-radius: calc(var(--island-radius) + 7px);
       background: linear-gradient(
         115deg,
         #38d8ff,
@@ -218,11 +224,21 @@ pub(super) const ISLAND_STYLE: &str = r#"
       50% { box-shadow: 0 0 0 3px rgba(255,190,76,.13); }
     }
     #island.expanded {
-      width: 560px;
+      --island-radius: 28px;
+      width: var(--expanded-width);
       height: 360px;
-      border-radius: 28px;
+      border-radius: var(--island-radius);
     }
-    #island.expanded::before { border-radius: 35px; }
+    #island.expanded::before { border-radius: calc(var(--island-radius) + 7px); }
+    #island.notched {
+      border-radius: 0 0 var(--island-radius) var(--island-radius);
+      box-shadow: 0 8px 20px rgba(0,0,0,.36);
+    }
+    #island.notched::before {
+      border-radius: 0 0 calc(var(--island-radius) + 7px)
+                     calc(var(--island-radius) + 7px);
+    }
+    #island.notched::after { border-radius: 0 0 999px 999px; }
     .surface {
       position: relative;
       z-index: 1;
@@ -230,7 +246,7 @@ pub(super) const ISLAND_STYLE: &str = r#"
       height: 100%;
       overflow: hidden;
       background: rgba(3,3,5,.985);
-      border-radius: 34px;
+      border-radius: calc(var(--island-radius) - 2px);
       box-shadow: inset 0 1px rgba(255,255,255,.035);
       transition: border-radius var(--island-resize-duration) var(--island-motion-ease);
       contain: layout paint style;
@@ -238,7 +254,12 @@ pub(super) const ISLAND_STYLE: &str = r#"
       transform: translateZ(0);
     }
     #island.resizing .surface { will-change: border-radius; }
-    #island.expanded .surface { border-radius: 26px; }
+    #island.expanded .surface { border-radius: calc(var(--island-radius) - 2px); }
+    #island.notched .surface {
+      border-radius: 0 0 calc(var(--island-radius) - 2px)
+                     calc(var(--island-radius) - 2px);
+      box-shadow: none;
+    }
     #island.has-attention .surface {
       box-shadow:
         inset 0 1px rgba(255,255,255,.045),
@@ -252,6 +273,29 @@ pub(super) const ISLAND_STYLE: &str = r#"
       column-gap: 10px;
       padding: 0 13px 0 11px;
       cursor: pointer;
+    }
+    #island.notched .summary {
+      position: relative;
+      display: block;
+    }
+    #island.notched #summary-robot,
+    #island.notched .summary-copy,
+    #island.notched .summary-tail {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+    #island.notched #summary-robot {
+      left: 11px;
+      width: 30px;
+    }
+    #island.notched .summary-copy {
+      left: 51px;
+      width: max(48px, calc(var(--notch-left) - 59px));
+    }
+    #island.notched .summary-tail {
+      left: calc(var(--notch-left) + var(--notch-width) + 8px);
+      right: 13px;
     }
     .summary-copy { min-width: 0; line-height: 1.08; }
     .headline, .detail, .compact-agent, .compact-status, .agent, .task, .workspace {
@@ -383,6 +427,39 @@ pub(super) const ISLAND_STYLE: &str = r#"
       transition: transform 180ms ease;
     }
     #island.expanded .chevron { transform: rotate(180deg); }
+    .drag-handle {
+      position: absolute;
+      z-index: 5;
+      top: 56px;
+      left: 50%;
+      width: 48px;
+      height: 13px;
+      padding: 0;
+      transform: translateX(-50%);
+      border: 0;
+      border-radius: 7px;
+      color: transparent;
+      background: transparent;
+      cursor: grab;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .drag-handle:active { cursor: grabbing; }
+    .drag-handle span {
+      position: absolute;
+      left: 50%;
+      bottom: 2px;
+      width: 24px;
+      height: 2px;
+      transform: translateX(-50%);
+      border-radius: 2px;
+      background: rgba(255,255,255,.2);
+      transition: width 120ms ease, background 120ms ease;
+    }
+    .drag-handle:hover span,
+    .drag-handle:focus-visible span {
+      width: 30px;
+      background: rgba(255,255,255,.42);
+    }
     .panel {
       position: absolute;
       top: 69px;
