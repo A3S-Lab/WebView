@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "a3s-webview"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "fs2",
  "libc",

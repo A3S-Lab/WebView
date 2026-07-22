@@ -50,24 +50,30 @@ a3s-webview --agent-island --snapshot <absolute-path> --lock-file <absolute-path
 
 The island is implemented by this standalone Tao/Wry helper. It embeds offline
 HTML, CSS, and JavaScript in the platform WebView; it does not render through
-`a3s-tui`, the A3S GUI crate, React, or Next.js. The compact `392 × 60` pill
+`a3s-tui`, the A3S GUI crate, React, or Next.js. The compact `480 × 72` pill
 expands to a bounded, scrollable `560 × 360` detail surface. Its transparent
 native window adds 48 logical pixels of horizontal and 32 pixels of vertical
-bleed on every side (`488 × 124` collapsed and `656 × 424` expanded). The
+bleed on every side (`576 × 136` collapsed and `656 × 424` expanded). The
 wide aura fades to transparent inside that bleed instead of exposing the
 native window's rectangular clipping boundary. The collapsed surface shows
-the primary agent, task context, state, live elapsed time, running/total
-counts, and needs-you count. Automatic attention expansion does not steal
-keyboard focus; the expanded window becomes focusable so a user can operate
-controls and type a reply directly in the island.
+the primary task, agent, workspace or actionable reason, state, and live
+elapsed time. Its bounded metric tail shows at most three items, prioritized
+as partial-data health, needs-you count, running count, direct-child progress,
+recent outcomes, then total agents. This keeps urgent and in-flight evidence
+visible without turning the compact surface into the full activity panel.
+When several rows need attention, an approval or input request that can
+unblock work becomes the primary compact row ahead of a retained failure.
+Automatic attention expansion does not steal keyboard focus; the expanded
+window becomes focusable so a user can operate controls and type a reply
+directly in the island.
 
 On macOS, the helper reads `NSScreen.safeAreaInsets` together with the two
 auxiliary top areas. A centered hardware notch makes the surface start at the
 physical screen edge with square top corners, while compact content is laid out
 in the unobstructed left and right wings. The compact width grows when needed to
 fit the notch, 12 logical pixels of clearance on each side, and two 160-pixel
-content wings; a 212-pixel notch therefore produces a `556 × 60` surface inside
-a `652 × 124` native window. The expanded width is at least `560` pixels and
+content wings; a 212-pixel notch therefore produces a `556 × 72` surface inside
+a `652 × 136` native window. The expanded width is at least `560` pixels and
 also grows if the compact notch-safe width is larger.
 
 A visible handle below the compact summary starts the platform's native window
@@ -109,6 +115,21 @@ the animated, multilayer multicolor neon border. Reduced-motion mode keeps a
 static color border, and backgrounded WebViews receive a low-frequency direct
 repaint so WebKit timer throttling does not freeze the breathing effect.
 
+Lifecycle motion is synchronized with the rendered surface. The native window
+stays hidden until the first snapshot has been laid out, then the compact island
+eases in from a committed frame. Expansion prepares the transparent native host
+first and leaves the visible geometry to one WebKit timeline; collapse finishes
+that timeline before shrinking the transparent host. Activity rows are not
+rebuilt during either morph, and the detail panel remains paint-contained until
+the geometry settles. The compositor is prepared before native growth, while
+continuous neon and blur work pauses for open, resize, and close. Redundant
+native frame updates and unchanged WebView bounds are skipped, so periodic
+recentering does not force an extra page layout. Automatic attention expansion
+waits for opening to finish, and closing preserves even an interrupted resize
+until its longest compositor transition completes. A background classification
+pauses only continuous neon work, not bounded lifecycle transitions.
+Reduced-motion preferences make every lifecycle change immediate.
+
 Control clicks and replies are authorized against the latest sanitized snapshot
 and written as bounded, versioned requests to a private sibling queue. Replies
 are limited to 1,000 characters / 4 KiB; `Enter` sends and `Shift+Enter` inserts
@@ -136,6 +157,8 @@ never appears in `argv` / `ps`).
 
 Release workflows build all CLI targets. Where the helper is not installed,
 RemoteUI degrades to the system browser and Agent Island startup is skipped.
+Every pull request runs strict Clippy and the full test suite natively on Linux,
+macOS, and Windows; Linux also verifies formatting, rustdoc, and package contents.
 
 ## License
 

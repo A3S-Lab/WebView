@@ -1,3 +1,5 @@
+#[path = "html/lifecycle.rs"]
+mod lifecycle;
 #[path = "html/script.rs"]
 mod script;
 #[path = "html/style.rs"]
@@ -16,7 +18,7 @@ const DOCUMENT_BODY: &str = r#"
   </style>
 </head>
 <body>
-  <main id="island" aria-label="A3S agent activity">
+  <main id="island" class="booting" aria-label="A3S agent activity">
     <div class="surface">
       <section class="summary" id="summary" role="button" aria-label="Show agent activity"
                aria-expanded="false">
@@ -35,11 +37,8 @@ const DOCUMENT_BODY: &str = r#"
             <span class="compact-duration duration" id="compact-duration">—</span>
           </div>
           <div class="compact-overview">
-            <span class="compact-running" id="compact-running">0 running</span>
-            <span class="metric-separator" aria-hidden="true">·</span>
-            <span class="compact-total" id="compact-total">0 total</span>
-            <span class="compact-attention" id="compact-attention"
-                  aria-label="Agents need you"></span>
+            <span class="compact-stats" id="compact-stats"
+                  aria-label="No agent metrics"></span>
             <span class="chevron" aria-hidden="true">⌄</span>
           </div>
         </div>
@@ -94,7 +93,9 @@ pub(crate) fn island_html() -> String {
         DOCUMENT_START,
         style::ISLAND_STYLE,
         DOCUMENT_BODY,
-        script::ISLAND_SCRIPT,
+        script::ISLAND_SCRIPT_START,
+        lifecycle::ISLAND_LIFECYCLE_SCRIPT,
+        script::ISLAND_SCRIPT_END,
         DOCUMENT_END,
     ]
     .concat()
@@ -133,10 +134,86 @@ mod tests {
     }
 
     #[test]
-    fn hidden_webview_directly_paints_neon_and_completes_resize() {
+    fn lifecycle_motion_is_paint_ready_event_driven_and_defers_heavy_rows() {
+        let html = html();
+        assert!(html.contains("class=\"booting\""));
+        assert!(html.contains("#island.booting"));
+        assert!(html.contains("#island.opening"));
+        assert!(html.contains("#island.closing"));
+        assert!(html.contains("requestAnimationFrame"));
+        assert!(html.contains("transitionend"));
+        assert!(html.contains("post('present')"));
+        assert!(html.contains("beginOpen"));
+        assert!(html.contains("expandAfterOpen"));
+        assert!(html.contains("pendingActivityRender"));
+        assert!(html.contains("width: 560px;\n      height: 291px;"));
+        assert!(html.contains("post('close-complete')"));
+        assert!(html.contains("beginClose"));
+        assert!(html.contains("freezeResizeForClose"));
+        assert!(html.contains("closing && event.propertyName === 'transform'"));
+        assert!(!html.contains("window.setTimeout(completeCollapse, 235)"));
+
+        let set_expanded = html
+            .split_once("function setExpanded")
+            .and_then(|(_, tail)| tail.split_once("function beginCollapse"))
+            .map(|(body, _)| body)
+            .expect("setExpanded function");
+        assert!(!set_expanded.contains("renderActivities("));
+
+        let begin_collapse = html
+            .split_once("function beginCollapse")
+            .and_then(|(_, tail)| tail.split_once("function finishCollapse"))
+            .map(|(body, _)| body)
+            .expect("beginCollapse function");
+        assert!(!begin_collapse.contains("renderActivities("));
+
+        let begin_close = html
+            .split_once("function beginClose")
+            .and_then(|(_, tail)| tail.split_once("function syncPanelAccess"))
+            .map(|(body, _)| body)
+            .expect("beginClose function");
+        assert!(!begin_close.contains("classList.remove('expanded')"));
+    }
+
+    #[test]
+    fn lifecycle_motion_prepares_compositor_before_native_resize() {
+        let html = html();
+        let request_expand = html
+            .split_once("function requestExpand")
+            .and_then(|(_, tail)| tail.split_once("function handleAttention"))
+            .map(|(body, _)| body)
+            .expect("requestExpand function");
+        let prepare = request_expand
+            .find("beginResize(null)")
+            .expect("resize preparation");
+        let native_handshake = request_expand
+            .find("post('expand')")
+            .expect("expand handshake");
+        assert!(
+            prepare < native_handshake,
+            "the expensive effects must pause before the native host grows"
+        );
+
+        assert!(html.contains("#island.expanded:not(.resizing) .panel"));
+        assert!(html.contains("!root.classList.contains('resizing')"));
+        assert!(html.contains("contain: layout paint style;"));
+        assert!(html.contains("#island.opening.active-work"));
+        assert!(html.contains("#island.closing.active-work"));
+        assert!(html.contains("#island.resizing::after"));
+        assert!(html.contains("surface.style.borderRadius"));
+        assert!(!html.contains("filter: blur(8px) saturate(1.2);"));
+        assert!(!html.contains("filter: blur(11px) saturate(1.42);"));
+    }
+
+    #[test]
+    fn backgrounded_webview_keeps_lifecycle_motion_and_directly_paints_neon() {
         let html = html();
         assert!(html.contains("webview-backgrounded"));
-        assert!(html.contains("if (document.hidden && collapsePending)"));
+        assert!(html.contains("html.webview-backgrounded #island.active-work"));
+        assert!(!html.contains("html.webview-backgrounded .panel"));
+        assert!(!html.contains("html.webview-backgrounded .chevron"));
+        assert!(!html.contains("document.hidden && collapsePending"));
+        assert!(html.contains("resizeFallbackMs"));
         assert!(html.contains("window.setInterval(paintHiddenNeon, 180)"));
         assert!(html.contains("root.style.boxShadow"));
         assert!(html.contains("addEventListener('visibilitychange'"));
@@ -145,10 +222,15 @@ mod tests {
     #[test]
     fn glow_has_native_bleed_space_and_only_the_inner_surface_clips() {
         let html = html();
+        let island_rule = html
+            .split_once("#island {")
+            .and_then(|(_, tail)| tail.split_once('}'))
+            .map(|(body, _)| body)
+            .expect("base island rule");
         assert!(html.contains("top: 32px"));
         assert!(html.contains("overflow: visible"));
-        assert!(html.contains("contain: layout;"));
-        assert!(!html.contains("contain: layout paint"));
+        assert!(island_rule.contains("contain: layout;"));
+        assert!(!island_rule.contains("contain: layout paint"));
         assert!(html.contains(".surface"));
         assert!(html.contains("overflow: hidden"));
         assert!(html.contains("inset: -30px -46px"));
@@ -159,27 +241,58 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_summary_exposes_primary_state_time_and_agent_counts() {
+    fn collapsed_summary_exposes_prioritized_context_progress_and_counts() {
         let html = html();
         for id in [
             "compact-agent",
             "compact-status",
             "compact-duration",
-            "compact-running",
-            "compact-total",
-            "compact-attention",
+            "compact-stats",
         ] {
             assert!(html.contains(&format!("id=\"{id}\"")));
         }
-        assert!(html.contains("--collapsed-width: 392px"));
-        assert!(html.contains("width: var(--collapsed-width)"));
-        assert!(html.contains("height: 60px"));
+        assert!(html.contains("width: 480px"));
+        assert!(html.contains("height: 72px"));
         assert!(html.contains("data.primary_agent"));
+        assert!(html.contains("data.primary_workspace"));
+        assert!(html.contains("data.primary_reason"));
+        assert!(html.contains("data.primary_child_progress"));
         assert!(html.contains("data.status"));
         assert!(html.contains("data.primary_started_at_ms"));
         assert!(html.contains("data.primary_finished_at_ms"));
-        assert!(html.contains("`${metrics.running} running`"));
+        assert!(html.contains("function compactMetricParts"));
+        assert!(html.contains("`${progress.settled}/${progress.total} settled`"));
+        assert!(html.contains("`${metrics.recent} recent`"));
         assert!(html.contains("`${metrics.total} total`"));
+        assert!(html.contains("compactStats.scrollWidth > compactStats.clientWidth"));
+        assert!(html.contains("visibleParts.pop()"));
+
+        let metric_parts = html
+            .split_once("function compactMetricParts")
+            .and_then(|(_, tail)| tail.split_once("function syncCompactMetrics"))
+            .map(|(body, _)| body)
+            .expect("compact metric hierarchy");
+        let partial = metric_parts
+            .find("Partial data")
+            .expect("partial-data priority");
+        let attention = metric_parts.find("needs you").expect("attention priority");
+        let running = metric_parts
+            .find("`${metrics.running} running`")
+            .expect("running priority");
+        let progress = metric_parts
+            .find("`${progress.settled}/${progress.total} settled`")
+            .expect("progress priority");
+        let recent = metric_parts
+            .find("`${metrics.recent} recent`")
+            .expect("recent fallback");
+        let total = metric_parts
+            .find("`${metrics.total} total`")
+            .expect("total fallback");
+        assert!(partial < attention);
+        assert!(attention < running);
+        assert!(running < progress);
+        assert!(progress < recent);
+        assert!(recent < total);
     }
 
     #[test]

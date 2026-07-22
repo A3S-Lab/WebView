@@ -1,18 +1,17 @@
-pub(super) const ISLAND_SCRIPT: &str = r#"
+pub(super) const ISLAND_SCRIPT_START: &str = r#"
   (() => {
     'use strict';
     const root = document.getElementById('island');
     const summary = document.getElementById('summary');
     const panel = document.getElementById('panel');
+    const surface = root.querySelector('.surface');
     const summaryRobot = document.getElementById('summary-robot');
     const headline = document.getElementById('headline');
     const detail = document.getElementById('detail');
     const compactAgent = document.getElementById('compact-agent');
     const compactStatus = document.getElementById('compact-status');
     const compactDuration = document.getElementById('compact-duration');
-    const compactRunning = document.getElementById('compact-running');
-    const compactTotal = document.getElementById('compact-total');
-    const compactAttention = document.getElementById('compact-attention');
+    const compactStats = document.getElementById('compact-stats');
     const panelSummary = document.getElementById('panel-summary');
     const activities = document.getElementById('activities');
     const degraded = document.getElementById('degraded');
@@ -50,6 +49,11 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
       'other'
     ];
     const filters = ['all', 'needs_attention', 'running', 'recent'];
+    const presentFallbackMs = 80;
+    const openFallbackMs = 320;
+    const resizeStartFallbackMs = 80;
+    const resizeFallbackMs = 380;
+    const closeFallbackMs = 320;
     const seenAttentionKeys = new Set();
     const attentionKeyOrder = [];
     const replyDrafts = new Map();
@@ -58,8 +62,24 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
     let expanded = false;
     let expandPending = false;
     let collapsePending = false;
+    let collapseCompletePosted = false;
     let attentionExpandQueued = false;
-    let collapseTimer = 0;
+    let expandAfterOpen = false;
+    let presentTimer = 0;
+    let presentFrame = 0;
+    let presentPosted = false;
+    let openTimer = 0;
+    let openFrame = 0;
+    let opening = false;
+    let opened = false;
+    let resizeStartTimer = 0;
+    let resizeFrame = 0;
+    let resizeTimer = 0;
+    let resizeCompletion = null;
+    let closeTimer = 0;
+    let closing = false;
+    let closeCompletePosted = false;
+    let pendingActivityRender = false;
     let neonTimer = 0;
     let elapsedTimer = 0;
     let model = null;
@@ -85,15 +105,15 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
       : 0;
     const plural = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
     const completeCollapse = () => {
-      clearTimeout(collapseTimer);
-      collapseTimer = 0;
+      if (!collapsePending || collapseCompletePosted) return;
+      collapseCompletePosted = true;
       post('collapse-complete');
     };
 
     function setScreenProfile(profile) {
       const dimension = (value, fallback, minimum, maximum) =>
         Number.isFinite(value) ? Math.min(maximum, Math.max(minimum, value)) : fallback;
-      const collapsedWidth = dimension(profile && profile.collapsedWidth, 392, 240, 1400);
+      const collapsedWidth = dimension(profile && profile.collapsedWidth, 480, 240, 1400);
       const expandedWidth = dimension(
         profile && profile.expandedWidth,
         Math.max(560, collapsedWidth),
@@ -205,11 +225,22 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
         `0 6px 18px rgba(0,0,0,.36), 0 0 ${7 + wave * 4}px rgba(77,181,255,${.38 + wave * .38}), 0 0 ${14 + wave * 4}px rgba(88,101,255,${.24 + wave * .26}), 0 0 ${20 + wave * 4}px rgba(224,73,255,${.12 + wave * .13})`;
     }
 
+    function lifecycleMotionActive() {
+      return opening
+        || closing
+        || root.classList.contains('booting')
+        || root.classList.contains('resizing');
+    }
+
     function syncNeon() {
       stopNeonTimer();
       root.style.removeProperty('background-position');
       root.style.removeProperty('box-shadow');
-      if (!root.classList.contains('active-work') || reducedMotion.matches) return;
+      if (
+        !root.classList.contains('active-work')
+        || reducedMotion.matches
+        || lifecycleMotionActive()
+      ) return;
       if (document.hidden) {
         paintHiddenNeon();
         neonTimer = window.setInterval(paintHiddenNeon, 180);
@@ -218,7 +249,6 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
 
     const syncDocumentVisibility = () => {
       document.documentElement.classList.toggle('webview-backgrounded', document.hidden);
-      if (document.hidden && collapsePending) completeCollapse();
       syncNeon();
     };
 
@@ -235,25 +265,90 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
       };
     }
 
-    function syncMetrics(metrics) {
+    function compactMetricParts(data, metrics) {
+      const parts = [];
+      if (data.degraded === true) {
+        parts.push({ label: 'Partial data', tone: 'partial' });
+      }
+      if (metrics.needs_attention > 0) {
+        parts.push({
+          label: metrics.needs_attention === 1
+            ? '1 needs you'
+            : `${metrics.needs_attention} need you`,
+          tone: 'attention'
+        });
+      }
+      if (metrics.running > 0) {
+        parts.push({ label: `${metrics.running} running`, tone: 'running' });
+      }
+      const source = data.primary_child_progress;
+      if (source && typeof source === 'object') {
+        const total = finiteCount(source.total);
+        const progress = {
+          settled: Math.min(total, finiteCount(source.settled)),
+          total
+        };
+        if (progress.total > 0) {
+          parts.push({
+            label: `${progress.settled}/${progress.total} settled`,
+            tone: 'progress'
+          });
+        }
+      }
+      if (metrics.recent > 0) {
+        parts.push({ label: `${metrics.recent} recent`, tone: 'recent' });
+      }
+      if (metrics.total > 0) {
+        parts.push({ label: `${metrics.total} total`, tone: 'total' });
+      }
+      if (parts.length > 3) parts.length = 3;
+      return parts;
+    }
+
+    function syncCompactMetrics(data, metrics) {
+      const visibleParts = compactMetricParts(data, metrics);
+      const draw = () => {
+        compactStats.replaceChildren();
+        visibleParts.forEach((part, index) => {
+          if (index > 0) {
+            const separator = document.createElement('span');
+            separator.className = 'metric-separator';
+            separator.setAttribute('aria-hidden', 'true');
+            separator.textContent = '·';
+            compactStats.append(separator);
+          }
+          const node = document.createElement('span');
+          node.className = `compact-stat ${part.tone}`;
+          node.textContent = part.label;
+          compactStats.append(node);
+        });
+      };
+      draw();
+      while (
+        compactStats.scrollWidth > compactStats.clientWidth
+        && visibleParts.length > 1
+      ) {
+        visibleParts.pop();
+        draw();
+      }
+      const labels = visibleParts.map(part => part.label);
+      compactStats.setAttribute(
+        'aria-label',
+        labels.length ? labels.join(', ') : 'No agent metrics'
+      );
+      return labels;
+    }
+
+    function syncMetrics(data, metrics) {
       countNodes.all.textContent = String(metrics.total);
       countNodes.needs_attention.textContent = String(metrics.needs_attention);
       countNodes.running.textContent = String(metrics.running);
       countNodes.recent.textContent = String(metrics.recent);
-      compactRunning.textContent = `${metrics.running} running`;
-      compactRunning.setAttribute('aria-label', plural(metrics.running, 'agent') + ' running');
-      compactTotal.textContent = `${metrics.total} total`;
-      compactTotal.setAttribute('aria-label', plural(metrics.total, 'agent') + ' total');
       const summaryParts = [plural(metrics.total, 'agent')];
       if (metrics.inferred > 0) summaryParts.push(`${metrics.inferred} detected`);
       panelSummary.textContent = summaryParts.join(' · ');
-      compactAttention.textContent = `! ${metrics.needs_attention}`;
-      compactAttention.classList.toggle('visible', metrics.needs_attention > 0);
-      compactAttention.setAttribute(
-        'aria-label',
-        plural(metrics.needs_attention, 'agent') + ' need you'
-      );
       root.classList.toggle('has-attention', metrics.needs_attention > 0);
+      return syncCompactMetrics(data, metrics);
     }
 
     function syncCompactPrimary(data) {
@@ -261,6 +356,21 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
       titledText(compactAgent, data.primary_agent, 'Agent');
       titledText(compactStatus, data.status, 'Idle');
       compactStatus.className = `compact-status ${tone}`;
+      const actionableReason = ['attention', 'danger'].includes(tone)
+        && typeof data.primary_reason === 'string'
+        && data.primary_reason.length
+        ? data.primary_reason
+        : '';
+      const context = actionableReason
+        || data.primary_workspace
+        || data.detail
+        || (data.primary_inferred === true ? 'Process evidence' : 'Local task');
+      titledText(detail, context, 'Waiting for activity');
+      detail.classList.toggle('attention-context', Boolean(actionableReason));
+      detail.classList.toggle(
+        'inferred-context',
+        !actionableReason && data.primary_inferred === true
+      );
 
       if (Number.isFinite(data.primary_started_at_ms) && data.primary_started_at_ms > 0) {
         compactDuration.dataset.started = String(data.primary_started_at_ms);
@@ -668,12 +778,19 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
     }
 
     function requestExpand() {
-      if (expanded || expandPending) return;
+      if (closing || expanded || expandPending) return;
+      if (!opened) {
+        expandAfterOpen = true;
+        return;
+      }
       if (collapsePending) {
         attentionExpandQueued = true;
         return;
       }
       expandPending = true;
+      // Promote and quiet the visible layers before Rust grows the native
+      // host. Otherwise the first host frame can rerasterize an animated blur.
+      beginResize(null);
       post('expand');
     }
 
@@ -694,19 +811,29 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
       model = data;
       const metrics = normalizedMetrics(data);
       titledText(headline, data.headline, 'No active agents');
-      titledText(detail, data.detail, 'Waiting for activity');
       degraded.classList.toggle('visible', data.degraded === true);
       root.classList.toggle('active-work', data.active_work === true);
       summaryRobot.replaceChildren(robotNode(data.vendor, data.tone));
       syncCompactPrimary(data);
-      syncMetrics(metrics);
+      const compactMetricLabels = syncMetrics(data, metrics);
       summary.setAttribute(
         'aria-label',
-        `${data.status || 'Idle'}. ${metrics.running} running, ${metrics.total} total. Show agent activity`
+        [
+          data.headline || 'No active agents',
+          data.primary_agent || 'Agent',
+          data.status || 'Idle',
+          ...compactMetricLabels,
+          'Show agent activity'
+        ].join('. ')
       );
       handleAttention(data);
-      renderActivities(data);
+      if (root.classList.contains('resizing') || opening || closing) {
+        pendingActivityRender = true;
+      } else {
+        renderActivities(data);
+      }
       syncNeon();
+      requestPresent();
     }
 
     function controlResult(result) {
@@ -746,56 +873,23 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
       turnOff.disabled = false;
       turnOff.textContent = 'Try again';
     }
+"#;
 
-    function syncPanelAccess() {
-      panel.setAttribute('aria-hidden', expanded ? 'false' : 'true');
-      if (expanded) {
-        panel.removeAttribute('inert');
-      } else {
-        panel.setAttribute('inert', '');
+pub(super) const ISLAND_SCRIPT_END: &str = r#"
+    root.addEventListener('transitionend', event => {
+      if (event.target !== root) return;
+      if (closing && event.propertyName === 'transform') {
+        completeClose();
+      } else if (opening && event.propertyName === 'transform') {
+        finishOpen();
+      } else if (root.classList.contains('resizing') && event.propertyName === 'height') {
+        finishResize();
       }
-    }
-
-    function setExpanded(next) {
-      clearTimeout(collapseTimer);
-      collapseTimer = 0;
-      expanded = next === true;
-      expandPending = false;
-      collapsePending = false;
-      root.classList.toggle('expanded', expanded);
-      summary.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-      syncPanelAccess();
-      if (expanded) attentionExpandQueued = false;
-      if (model) renderActivities(model);
-      if (!expanded && attentionExpandQueued) {
-        attentionExpandQueued = false;
-        requestExpand();
-      }
-    }
-
-    function beginCollapse() {
-      if (!expanded || collapsePending) return;
-      expanded = false;
-      collapsePending = true;
-      attentionExpandQueued = false;
-      root.classList.remove('expanded');
-      summary.setAttribute('aria-expanded', 'false');
-      syncPanelAccess();
-      if (model) renderActivities(model);
-      if (document.hidden) {
-        completeCollapse();
-      } else {
-        collapseTimer = window.setTimeout(completeCollapse, 235);
-      }
-    }
-
-    function finishCollapse() {
-      setExpanded(false);
-    }
+    });
 
     summary.addEventListener('click', event => {
       event.stopPropagation();
-      if (expandPending || collapsePending) return;
+      if (closing || expandPending || collapsePending) return;
       if (expanded) {
         beginCollapse();
       } else {
@@ -805,6 +899,7 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
     filterButtons.forEach(button => {
       button.addEventListener('click', event => {
         event.stopPropagation();
+        if (closing || root.classList.contains('resizing')) return;
         const requested = button.dataset.filter;
         if (!filters.includes(requested) || requested === selectedFilter) return;
         selectedFilter = requested;
@@ -836,7 +931,12 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
 
     document.addEventListener('visibilitychange', syncDocumentVisibility);
     if (typeof reducedMotion.addEventListener === 'function') {
-      reducedMotion.addEventListener('change', syncNeon);
+      reducedMotion.addEventListener('change', () => {
+        if (reducedMotion.matches && opening) finishOpen();
+        if (reducedMotion.matches && root.classList.contains('resizing')) finishResize();
+        if (reducedMotion.matches && closing) completeClose();
+        syncNeon();
+      });
     }
     elapsedTimer = window.setInterval(updateDurations, 1000);
     syncDocumentVisibility();
@@ -845,9 +945,11 @@ pub(super) const ISLAND_SCRIPT: &str = r#"
       controlResult,
       disableResult,
       setScreenProfile,
+      beginOpen,
       setExpanded,
       beginCollapse,
-      finishCollapse
+      finishCollapse,
+      beginClose
     };
     post('ready');
   })();

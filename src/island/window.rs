@@ -2,8 +2,8 @@ use tao::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use tao::event_loop::{EventLoop, EventLoopWindowTarget};
 use tao::window::{Window, WindowBuilder};
 
-pub(crate) const COLLAPSED_WIDTH: f64 = 392.0;
-pub(crate) const COLLAPSED_HEIGHT: f64 = 60.0;
+pub(crate) const COLLAPSED_WIDTH: f64 = 480.0;
+pub(crate) const COLLAPSED_HEIGHT: f64 = 72.0;
 pub(crate) const EXPANDED_WIDTH: f64 = 560.0;
 pub(crate) const EXPANDED_HEIGHT: f64 = 360.0;
 pub(crate) const HORIZONTAL_GLOW_INSET: f64 = 48.0;
@@ -332,8 +332,16 @@ pub(crate) fn resize_and_center(window: &Window, size: IslandSize) -> ScreenProf
         scale_factor_millis: (monitor.scale_factor() * 1000.0).round().max(1.0) as u32,
     };
     let layout = layout_for_monitor(geometry, size, profile);
-    window.set_inner_size(layout.size);
-    window.set_outer_position(layout.position);
+    if window.inner_size() != layout.size {
+        window.set_inner_size(layout.size);
+    }
+    let position_changed = match window.outer_position() {
+        Ok(position) => position != layout.position,
+        Err(_) => true,
+    };
+    if position_changed {
+        window.set_outer_position(layout.position);
+    }
     profile
 }
 
@@ -344,15 +352,11 @@ fn resize_and_center_macos(window: &Window, size: IslandSize) -> Option<ScreenPr
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use tao::platform::macos::WindowExtMacOS;
 
-    let Some(mtm) = MainThreadMarker::new() else {
-        return None;
-    };
+    let mtm = MainThreadMarker::new()?;
     // `mainScreen` follows the screen containing the user's active/key window,
     // which is a better island target than the helper's hidden startup frame.
     let ns_window = unsafe { &*(window.ns_window() as *const NSWindow) };
-    let Some(screen) = NSScreen::mainScreen(mtm).or_else(|| ns_window.screen()) else {
-        return None;
-    };
+    let screen = NSScreen::mainScreen(mtm).or_else(|| ns_window.screen())?;
     let screen_frame = screen.frame();
     let profile = screen_profile_macos(&screen);
     let requested = size.logical_size(profile);
@@ -370,10 +374,17 @@ fn resize_and_center_macos(window: &Window, size: IslandSize) -> Option<ScreenPr
     // status-level island can occupy the physical top edge without size drift.
     let x = screen_frame.origin.x + (screen_frame.size.width - width) / 2.0;
     let y = screen_frame.origin.y + screen_frame.size.height - top_offset - height;
-    ns_window.setFrame_display(
-        NSRect::new(NSPoint::new(x, y), NSSize::new(width, height)),
-        true,
-    );
+    let target = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
+    let current = ns_window.frame();
+    let changed = (current.origin.x - target.origin.x).abs() > 0.25
+        || (current.origin.y - target.origin.y).abs() > 0.25
+        || (current.size.width - target.size.width).abs() > 0.25
+        || (current.size.height - target.size.height).abs() > 0.25;
+    if changed {
+        // Frame mutation is synchronous even when redisplay is deferred. WebKit
+        // can then commit the host and CSS motion in one display pass.
+        ns_window.setFrame_display(target, false);
+    }
     Some(profile)
 }
 
@@ -402,14 +413,19 @@ pub(crate) fn resize_preserving_position(
         (requested.width * scale).round().max(1.0) as u32,
         (requested.height * scale).round().max(1.0) as u32,
     );
-    window.set_inner_size(new_size);
+    if old_size != new_size {
+        window.set_inner_size(new_size);
+    }
     if let Some(old_position) = old_position {
         let x_delta = (i64::from(old_size.width) - i64::from(new_size.width)) / 2;
         let x = i64::from(old_position.x).saturating_add(x_delta);
-        window.set_outer_position(PhysicalPosition::new(
+        let new_position = PhysicalPosition::new(
             x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
             old_position.y,
-        ));
+        );
+        if old_position != new_position {
+            window.set_outer_position(new_position);
+        }
     }
     profile
 }
@@ -434,13 +450,17 @@ fn resize_preserving_position_macos(window: &Window, size: IslandSize) -> Option
     let current = ns_window.frame();
     let center_x = current.origin.x + current.size.width / 2.0;
     let top = current.origin.y + current.size.height;
-    ns_window.setFrame_display(
-        NSRect::new(
-            NSPoint::new(center_x - width / 2.0, top - height),
-            NSSize::new(width, height),
-        ),
-        true,
+    let target = NSRect::new(
+        NSPoint::new(center_x - width / 2.0, top - height),
+        NSSize::new(width, height),
     );
+    let changed = (current.origin.x - target.origin.x).abs() > 0.25
+        || (current.origin.y - target.origin.y).abs() > 0.25
+        || (current.size.width - target.size.width).abs() > 0.25
+        || (current.size.height - target.size.height).abs() > 0.25;
+    if changed {
+        ns_window.setFrame_display(target, false);
+    }
     Some(profile)
 }
 
@@ -555,8 +575,8 @@ mod tests {
             IslandSize::Collapsed,
             ScreenProfile::default(),
         );
-        assert_eq!(layout.size, PhysicalSize::new(976, 248));
-        assert_eq!(layout.position, PhysicalPosition::new(1024, -52));
+        assert_eq!(layout.size, PhysicalSize::new(1152, 272));
+        assert_eq!(layout.position, PhysicalPosition::new(936, -52));
     }
 
     #[test]
@@ -594,9 +614,11 @@ mod tests {
     fn glow_bleed_contains_the_collapsed_aura_before_native_clipping() {
         let size = IslandSize::Collapsed.logical_size(ScreenProfile::default());
 
-        assert_eq!(size, LogicalSize::new(488.0, 124.0));
-        assert!(HORIZONTAL_GLOW_INSET >= 46.0);
-        assert!(VERTICAL_GLOW_INSET >= 30.0);
+        assert_eq!(size, LogicalSize::new(576.0, 136.0));
+        const {
+            assert!(HORIZONTAL_GLOW_INSET >= 46.0);
+            assert!(VERTICAL_GLOW_INSET >= 30.0);
+        }
     }
 
     #[test]
@@ -618,7 +640,7 @@ mod tests {
             IslandSize::Collapsed,
             profile,
         );
-        assert_eq!(layout.size, PhysicalSize::new(1304, 248));
+        assert_eq!(layout.size, PhysicalSize::new(1304, 272));
         assert_eq!(layout.position, PhysicalPosition::new(860, -64));
     }
 
