@@ -481,6 +481,7 @@ fn screen_profile_macos(screen: &objc2_app_kit::NSScreen) -> ScreenProfile {
     )
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn screen_profile_from_safe_areas(
     screen_x: f64,
     screen_width: f64,
