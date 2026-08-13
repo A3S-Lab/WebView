@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Remote workspace smoke</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        background: #eaf2ff;
+        color: #14233d;
+      }
+
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; }
+      main { max-width: 36rem; padding: 48px; }
+      h1 { margin: 0 0 16px; font: 700 36px/1.1 ui-serif, Georgia, serif; }
+      p { margin: 0; color: #52647f; line-height: 1.7; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Second-origin surface</h1>
+      <p>This page is served from a different loopback origin than the trusted shell.</p>
+    </main>
+    <script src="/remote.js"></script>
+  </body>
+</html>

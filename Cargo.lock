@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "a3s-webview"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "fs2",
  "libc",
@@ -14,6 +14,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tao",
+ "url",
  "windows-sys 0.61.2",
  "wry",
 ]

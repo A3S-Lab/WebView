@@ -37,6 +37,7 @@
 //! `--header 'Name: Value'` (repeatable) still attaches raw request headers.
 
 mod island;
+mod workspace_host;
 
 use tao::{
     dpi::LogicalSize,
@@ -392,6 +393,16 @@ fn main() {
     if raw_args.first().is_some_and(|arg| arg == "--agent-island") {
         if let Err(error) = island::run(raw_args.into_iter().skip(1)) {
             eprintln!("a3s-webview: {error}\n{}", island::USAGE);
+            std::process::exit(2);
+        }
+        return;
+    }
+    if raw_args
+        .first()
+        .is_some_and(|arg| arg == "--workspace-host")
+    {
+        if let Err(error) = workspace_host::run(raw_args.into_iter().skip(1)) {
+            eprintln!("a3s-webview: {error}\n{}", workspace_host::USAGE);
             std::process::exit(2);
         }
         return;

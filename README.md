@@ -7,6 +7,12 @@ It owns two desktop surfaces that must remain independent of the terminal:
 - the transparent, always-on-top Agent Island at the physical screen's top
   center.
 
+It also provides a native Workspace Host for applications that need several
+isolated WebViews inside one window. The host keeps the application shell in
+one WebView and places generation-aware local or remote resource WebViews at
+typed rectangles supplied by that shell. This avoids iframe embedding limits
+without allowing unvalidated navigation or stale resource events.
+
 Plain links still open in the user's browser. Failure to start either native
 surface never prevents the A3S Code TUI from running.
 
@@ -29,6 +35,10 @@ a3s-webview --url <http(s)://…|file://…> [--width N] [--height N] [--title T
             [--header 'Name: Value']… [--token-env NAME] [--no-auth]
 
 a3s-webview --agent-island --snapshot <absolute-path> --lock-file <absolute-path>
+
+a3s-webview --workspace-host --url <http(s)://…|file://…>
+            [--width N] [--height N] [--title T]
+            [--allow-file-root <absolute-path>]…
 ```
 
 - `--url` (RemoteUI mode) — `http://`, `https://`, or a trusted local `file://`
@@ -45,6 +55,61 @@ a3s-webview --agent-island --snapshot <absolute-path> --lock-file <absolute-path
   fresh snapshot without an exact non-idle A3S lifecycle or recognized
   coding-agent process closes the helper; fresh process rows trigger and keep
   the island alive.
+- `--workspace-host` — load the application shell and expose the versioned
+  `a3s.workspace.v1` JavaScript bridge. The shell may open local application,
+  remote HTTP(S), or explicitly rooted local-file resources as child WebViews.
+  Every open, bounds, occlusion, close, and bridge message carries a resource
+  id and generation. The host rejects stale generations, credentialed URLs,
+  unsupported schemes, unapproved origins, unsafe file paths, oversized
+  messages, and unrequested popup navigation. The privileged shell bridge is
+  pinned to the exact initial path and query, rather than every page on the
+  same origin. Content WebViews stay hidden while loading, reveal with a short
+  native transition that respects reduced-motion settings, and are destroyed
+  when closed or when the host exits.
+
+## Workspace Host bridge
+
+The shell receives `window.a3sWorkspaceHost` before its scripts run. It sends
+JSON commands with `postMessage(command)` and receives lifecycle events through
+the `a3s-workspace-event` `CustomEvent`. Local applications that opt into the
+typed bridge receive `window.a3sWorkspaceView`; they call `ready()` only after
+their interactive state is mounted, `fail(message)` for a bounded recoverable
+error, and `postMessage(payload)` for schema-owned application messages.
+
+The host does not treat a network load as application readiness when the typed
+bridge is enabled. It waits for the application handshake and reports an error
+after 30 seconds. Host-to-view messages are held in a bounded native FIFO until
+the typed application reports ready, then delivered in order. This prevents an
+initial revision from being lost during bundle startup or navigation without
+creating an unbounded memory sink.
+
+The shell can issue `workspace.occlusion` while a trusted sibling overlay is
+open. Occlusion removes the active child WebView from presentation and input
+without destroying it or navigating away. Clearing occlusion restores the same
+mounted view without replaying its entrance animation. Readiness, pending
+messages, and agent work continue independently; stale generations cannot hide
+or restore newer content.
+
+Remote resources default to their initial origin and receive no bridge. A
+caller must explicitly add origins or enable the typed bridge in the open
+policy. `javascript:`, embedded credentials, arbitrary file access, and raw
+native backend names are never accepted. Local application routes also reject
+encoded separators, encoded dot segments, and double-encoded traversal input.
+
+Run the native two-origin smoke gate to verify typed local content, retained
+state across occlusion, a remote resource on a second loopback origin,
+same-origin navigation, and rejection of cross-origin navigation:
+
+```bash
+./scripts/workspace-host-smoke.sh
+```
+
+The fixture opens a typed local application as a child WebView, posts one
+artifact revision before readiness, observes ordered delivery after readiness,
+continuously exercises native bounds updates, and then replaces it with a
+bridge-free remote surface from `127.0.0.1:4319`. The remote surface may
+navigate within that origin but a navigation back to the shell origin is
+rejected before any request reaches the shell server.
 
 ## Agent Island UI
 

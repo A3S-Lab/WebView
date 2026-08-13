@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>A3S Workspace Host Smoke</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        background: #10261f;
+        color: #edf7ef;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 72% 22%, rgb(164 238 188 / 8%), transparent 34%),
+          linear-gradient(135deg, #0c201a, #17342a);
+      }
+
+      .status {
+        position: absolute;
+        z-index: 2;
+        top: 18px;
+        left: 20px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #b8cfc0;
+        font-size: 12px;
+      }
+
+      .status::before {
+        content: "";
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #a5efbd;
+        box-shadow: 0 0 18px rgb(165 239 189 / 58%);
+      }
+
+      #slot {
+        position: absolute;
+        inset: 12px 12px 12px 160px;
+        border-radius: 12px;
+      }
+
+      aside {
+        position: absolute;
+        inset: 54px auto 16px 20px;
+        width: 124px;
+        padding: 0;
+      }
+
+      ol { margin: 0; padding-left: 16px; color: #b8cfc0; font-size: 10px; line-height: 1.55; }
+      li[data-pass="true"] { color: #a5efbd; }
+
+      .overlay {
+        position: absolute;
+        z-index: 3;
+        inset: 12px 12px 12px 160px;
+        display: none;
+        padding: 28px;
+        border-radius: 12px;
+        background: #f2eee4;
+        color: #1e2923;
+      }
+
+      .overlay[data-open="true"] { display: block; }
+      .overlay h2 { margin: 0 0 12px; font: 700 30px/1.1 ui-serif, Georgia, serif; }
+      .overlay p { max-width: 42ch; color: #5f6d65; line-height: 1.6; }
+      button { padding: 8px 12px; border: 1px solid #91aa99; border-radius: 8px; background: white; color: #1e2923; }
+    </style>
+  </head>
+  <body>
+    <span class="status" id="phase">waiting</span>
+    <aside>
+      <ol id="trace"></ol>
+    </aside>
+    <div id="slot" aria-hidden="true"></div>
+    <section class="overlay" id="overlay" data-open="false" aria-label="Trusted overlay">
+      <h2>Trusted sibling overlay</h2>
+      <p>The child WebView is concealed, not destroyed. Restore it to verify that its local input remains unchanged.</p>
+      <button id="restore" type="button">Restore workspace</button>
+    </section>
+    <script src="/shell.js"></script>
+  </body>
+</html>
