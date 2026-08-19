@@ -1,9 +1,17 @@
+#[path = "html/a3s_ui.rs"]
+mod a3s_ui;
+#[path = "html/fab_settings.rs"]
+mod fab_settings;
+#[path = "html/fab_style.rs"]
+mod fab_style;
 #[path = "html/lifecycle.rs"]
 mod lifecycle;
 #[path = "html/script.rs"]
 mod script;
 #[path = "html/style.rs"]
 mod style;
+
+use super::window::IslandPresentation;
 
 const DOCUMENT_START: &str = r#"<!doctype html>
 <html lang="en">
@@ -14,14 +22,31 @@ const DOCUMENT_START: &str = r#"<!doctype html>
   <style>
 "#;
 
-const DOCUMENT_BODY: &str = r#"
+const DOCUMENT_BODY_START: &str = r#"
   </style>
 </head>
 <body>
-  <main id="island" class="booting" aria-label="A3S agent activity">
+"#;
+
+const DOCUMENT_MAIN_ISLAND: &str = r#"  <main id="island" class="booting" aria-label="A3S agent activity">
+"#;
+
+const DOCUMENT_MAIN_FAB: &str = r#"  <main id="island" class="booting fab-mode" aria-label="Coding Reviewer suggestions">
+"#;
+
+const DOCUMENT_BODY: &str = r##"
     <div class="surface">
       <section class="summary" id="summary" role="button" aria-label="Show agent activity"
-               aria-expanded="false">
+               aria-expanded="false" tabindex="0">
+        <div class="fab-mark" aria-hidden="true">
+          <svg viewBox="0 0 28 28" focusable="false" aria-hidden="true">
+            <path d="M7.5 8.5h5l3 5-3 5h-5l-3-5 3-5Z"></path>
+            <path d="M15.5 6.5h5l3 5-3 5h-2.5"></path>
+            <circle cx="9.5" cy="13.5" r="1.35"></circle>
+            <circle cx="18.5" cy="11.5" r="1.35"></circle>
+          </svg>
+        </div>
+        <span class="fab-badge" id="fab-badge" aria-label="No new suggestions"></span>
         <div id="summary-robot" aria-hidden="true"></div>
         <div class="summary-copy">
           <div class="headline" id="headline">A3S agents</div>
@@ -47,7 +72,7 @@ const DOCUMENT_BODY: &str = r#"
               aria-label="Move Agent Island" title="Drag to move Agent Island">
         <span aria-hidden="true"></span>
       </button>
-      <section class="panel" id="panel" aria-label="Agent activity details"
+      <section class="panel agent-panel" id="panel" aria-label="Agent activity details"
                aria-hidden="true" inert>
         <div class="rule"></div>
         <header class="panel-title">
@@ -78,23 +103,155 @@ const DOCUMENT_BODY: &str = r#"
         </nav>
         <div id="activities" role="list"></div>
       </section>
+      <section class="suggestion-panel" id="suggestion-panel"
+               aria-label="Coding Reviewer suggestions" aria-hidden="true" inert>
+        <header class="suggestion-header workspace-header">
+          <div class="suggestion-heading">
+            <strong>Coding Reviewer</strong>
+            <span id="suggestion-summary">Waiting for sessions</span>
+          </div>
+          <div class="suggestion-header-actions">
+            <span class="badge" id="surface-health" data-variant="secondary" hidden>Degraded</span>
+            <button class="btn global-suggestion-toggle" id="global-suggestion-toggle"
+                    type="button" role="switch" aria-checked="true">
+              <span class="toggle-track" aria-hidden="true"><i></i></span>
+              <span id="global-suggestion-label">Suggestions on</span>
+            </button>
+            <button class="btn island-power" id="hide-fab" type="button" data-variant="ghost"
+                    aria-label="Hide Coding Reviewer button"
+                    title="Hide Coding Reviewer button">Hide FAB</button>
+          </div>
+        </header>
+        <div class="reviewer-layout settings-layout" style="--settings-navigation-size:8.75rem">
+          <aside>
+            <nav aria-label="Coding Reviewer sections">
+              <ul>
+                <li><a href="#reviewer-suggestions" data-reviewer-view="suggestions"
+                       aria-current="page">Suggestions <span class="badge" id="nav-unread" hidden>0</span></a></li>
+                <li><a href="#reviewer-channels" data-reviewer-view="channels">IM channels</a></li>
+                <li><a href="#reviewer-model" data-reviewer-view="model">Reviewer model</a></li>
+              </ul>
+            </nav>
+          </aside>
+          <main class="reviewer-views">
+            <section class="reviewer-view suggestion-workbench" id="reviewer-suggestions"
+                     data-reviewer-panel="suggestions" aria-label="Programming suggestions">
+              <nav class="suggestion-sessions" id="suggestion-sessions"
+                   aria-label="Codex sessions"></nav>
+              <section class="suggestion-detail" id="suggestion-detail" aria-live="polite">
+                <div class="suggestion-empty" id="suggestion-empty">
+                  <svg viewBox="0 0 32 32" focusable="false" aria-hidden="true">
+                    <path d="M8 10.5h7l4 6-4 6H8l-4-6 4-6Z"></path>
+                    <path d="M19 8h6l3 4.5-3 4.5h-3"></path>
+                  </svg>
+                  <strong>Select a Codex session</strong>
+                  <span>Suggestions stay quiet until there is actionable evidence.</span>
+                </div>
+                <section class="suggestion-editor approval-request" id="suggestion-editor"
+                         data-state="pending" aria-labelledby="suggestion-title" hidden>
+                  <header class="suggestion-context">
+                    <div>
+                      <h2 id="suggestion-title">Programming suggestion</h2>
+                      <p id="suggestion-meta">Managed Codex session</p>
+                    </div>
+                    <span class="badge delivery-state" id="delivery-state"
+                          data-variant="secondary">Approval required</span>
+                  </header>
+                  <section>
+                    <p class="suggestion-reason" id="suggestion-reason"></p>
+                    <label class="field suggestion-draft-label" for="suggestion-draft">
+                      <span>Edit before sending</span>
+                      <textarea class="input suggestion-draft" id="suggestion-draft" rows="7"
+                                maxlength="1000" spellcheck="true"></textarea>
+                    </label>
+                  </section>
+                  <footer class="suggestion-footer">
+                    <span class="suggestion-result" id="suggestion-result" role="status"></span>
+                    <div class="suggestion-actions">
+                      <button class="btn suggestion-copy" id="suggestion-copy" type="button"
+                              data-size="sm" data-variant="ghost">Copy</button>
+                      <button class="btn suggestion-dismiss" id="suggestion-dismiss"
+                              type="button" data-size="sm" data-variant="outline">Dismiss</button>
+                      <button class="btn suggestion-send" id="suggestion-send"
+                              type="button" data-size="sm">Send to Codex</button>
+                    </div>
+                  </footer>
+                </section>
+              </section>
+            </section>
+
+            <section class="reviewer-view settings-view" id="reviewer-channels"
+                     data-reviewer-panel="channels" aria-labelledby="channels-title" hidden>
+              <header class="settings-view-header">
+                <div><h2 id="channels-title">IM channels</h2><p>Connect chat channels to query and manage every local Codex session.</p></div>
+                <span class="badge" id="channel-summary" data-variant="secondary">Not configured</span>
+              </header>
+              <div class="channel-list" id="channel-list" aria-live="polite"></div>
+            </section>
+
+            <section class="reviewer-view settings-view" id="reviewer-model"
+                     data-reviewer-panel="model" aria-labelledby="model-title" hidden>
+              <header class="settings-view-header">
+                <div><h2 id="model-title">Reviewer model</h2><p>Configure proposal-only cognition and the evidence it may inspect.</p></div>
+                <span class="badge" id="restart-required" data-variant="secondary" hidden>Restart required</span>
+              </header>
+              <form class="card reviewer-form" id="llm-settings-form" data-size="sm" novalidate>
+                <header><h3>Model connection</h3><p>Non-secret settings are revisioned in A3S ORM.</p></header>
+                <section class="form-grid">
+                  <label class="field switch-field" data-orientation="horizontal">
+                    <input class="input" id="llm-enabled" type="checkbox" role="switch">
+                    <span><strong>Enable cognitive review</strong><small>Deterministic checks remain active when disabled.</small></span>
+                  </label>
+                  <label class="field"><span>Provider</span><input class="input" id="llm-provider" maxlength="64" autocomplete="off" placeholder="openai"></label>
+                  <label class="field"><span>Model</span><input class="input" id="llm-model" maxlength="256" autocomplete="off" placeholder="gpt-5"></label>
+                  <label class="field"><span>Base URL</span><input class="input" id="llm-base-url" type="url" maxlength="2048" autocomplete="off" placeholder="https://api.openai.com/v1"></label>
+                  <label class="field"><span>Keychain reference</span><input class="input" id="llm-api-key-ref" maxlength="256" autocomplete="off" placeholder="reviewer/openai"></label>
+                  <label class="field"><span>Evidence detail</span><select class="input" id="llm-evidence"><option value="metadata">Metadata only</option><option value="redacted_error">Metadata and redacted errors</option></select></label>
+                </section>
+                <fieldset class="disclosure-fields">
+                  <legend>Project context disclosure</legend>
+                  <label><input class="input" id="share-habits" type="checkbox"><span><strong>Coding habits</strong><small>Share learned user preferences.</small></span></label>
+                  <label><input class="input" id="share-knowledge" type="checkbox"><span><strong>Knowledge graph</strong><small>Share bounded project facts.</small></span></label>
+                  <label><input class="input" id="share-transitions" type="checkbox"><span><strong>Recent transitions</strong><small>Requires knowledge graph disclosure.</small></span></label>
+                </fieldset>
+                <footer><span id="llm-settings-result" role="status"></span><button class="btn" id="save-llm-settings" type="submit" data-size="sm">Save settings</button></footer>
+              </form>
+              <form class="card reviewer-form secret-form" id="llm-secret-form" data-size="sm" novalidate>
+                <header><h3>API key</h3><p>The value travels through a private same-user socket directly to Keychain.</p></header>
+                <section><label class="field" for="llm-api-key"><span>Replacement key</span><input class="input" id="llm-api-key" type="password" maxlength="16384" autocomplete="new-password" spellcheck="false"></label></section>
+                <footer><span id="llm-secret-result" role="status"></span><button class="btn" id="save-llm-secret" type="submit" data-size="sm">Replace API key</button></footer>
+              </form>
+            </section>
+          </main>
+        </div>
+      </section>
     </div>
   </main>
   <script>
-"#;
+"##;
 
 const DOCUMENT_END: &str = r#"
   </script>
 </body>
 </html>"#;
 
-pub(crate) fn island_html() -> String {
+pub(crate) fn island_html(presentation: IslandPresentation) -> String {
     [
         DOCUMENT_START,
+        a3s_ui::METADATA,
+        a3s_ui::CSS,
         style::ISLAND_STYLE,
+        fab_style::FAB_STYLE,
+        DOCUMENT_BODY_START,
+        if presentation.is_fab() {
+            DOCUMENT_MAIN_FAB
+        } else {
+            DOCUMENT_MAIN_ISLAND
+        },
         DOCUMENT_BODY,
         script::ISLAND_SCRIPT_START,
         lifecycle::ISLAND_LIFECYCLE_SCRIPT,
+        fab_settings::FAB_SETTINGS_SCRIPT,
         script::ISLAND_SCRIPT_END,
         DOCUMENT_END,
     ]
@@ -106,7 +263,11 @@ mod tests {
     use super::*;
 
     fn html() -> String {
-        island_html()
+        island_html(IslandPresentation::Island)
+    }
+
+    fn fab_html() -> String {
+        island_html(IslandPresentation::Fab)
     }
 
     #[test]
@@ -393,9 +554,82 @@ mod tests {
 
     #[test]
     fn css_avoids_newer_color_functions_for_embedded_webviews() {
-        let html = html();
-        assert!(!html.contains("color-mix("));
-        assert!(!html.contains("rgba(77,181,255,var("));
-        assert!(!html.contains("calc(var(--neon-alpha"));
+        assert!(!style::ISLAND_STYLE.contains("color-mix("));
+        assert!(!style::ISLAND_STYLE.contains("rgba(77,181,255,var("));
+        assert!(!style::ISLAND_STYLE.contains("calc(var(--neon-alpha"));
+    }
+
+    #[test]
+    fn fab_embeds_the_pinned_a3s_ui_operational_components_offline() {
+        let html = fab_html();
+        assert!(html.contains("@a3s-lab/ui 0.3.0"));
+        assert!(html.contains("sha256:25803bd741f763a5b7ed5cb4c753cad0"));
+        assert!(a3s_ui::CSS.contains(".settings-layout"));
+        assert!(a3s_ui::CSS.contains(".approval-request"));
+        assert!(a3s_ui::CSS.contains(".btn"));
+    }
+
+    #[test]
+    fn fab_scopes_a3s_ui_theme_badges_and_scroll_layout() {
+        let html = fab_html();
+
+        assert!(html.contains("#island.fab-mode {"));
+        assert!(html.contains("color-scheme: dark"));
+        assert!(html.contains("--a3s-panel: var(--card)"));
+        assert!(html.contains("#degraded { display: none"));
+        assert!(!html.contains(".badge { display: none"));
+        assert!(html.contains("#island.fab-mode .reviewer-layout > main > .reviewer-view"));
+        assert!(html.contains(
+            "#island.fab-mode .reviewer-layout > main > .settings-view { display: block; }"
+        ));
+    }
+
+    #[test]
+    fn fab_is_a_bounded_draggable_suggestion_surface_with_an_unread_badge() {
+        let html = fab_html();
+
+        assert!(html.contains("class=\"booting fab-mode\""));
+        assert!(html.contains("id=\"fab-badge\""));
+        assert!(html.contains("id=\"suggestion-panel\""));
+        assert!(html.contains("id=\"global-suggestion-toggle\""));
+        assert!(html.contains("id=\"suggestion-sessions\""));
+        assert!(html.contains("id=\"suggestion-draft\""));
+        assert!(html.contains("id=\"suggestion-send\""));
+        assert!(html.contains("id=\"hide-fab\""));
+        assert!(html.contains("--collapsed-width: 56px"));
+        assert!(html.contains("--expanded-width: 720px"));
+        assert!(html.contains("fabBadge.classList.toggle('visible'"));
+        assert!(html.contains("if (isFab) return;"));
+        assert!(html.contains("post('drag-window')"));
+    }
+
+    #[test]
+    fn fab_edits_and_submits_the_complete_exact_draft_but_keeps_observed_sessions_copy_only() {
+        let html = fab_html();
+
+        assert!(html.contains("controlFor(activeSuggestion, 'approve_suggestion')"));
+        assert!(html.contains("controlFor(activeSuggestion, 'dismiss_suggestion')"));
+        assert!(html.contains("message: value"));
+        assert!(html.contains("payload.message = message"));
+        assert!(html.contains("new TextEncoder().encode(value).length > 4096"));
+        assert!(html.contains("event.metaKey && !event.ctrlKey"));
+        assert!(html.contains("navigator.clipboard.writeText(value)"));
+        assert!(html.contains("document.execCommand('copy')"));
+        assert!(html.contains("text(deliveryState, approve ? 'Approval required' : 'Copy only')"));
+        assert!(html.contains("suggestionSend.dataset.available = canSend ? 'true' : 'false'"));
+    }
+
+    #[test]
+    fn fab_lifecycle_exposes_only_the_active_panel_and_defers_the_correct_renderer() {
+        let html = fab_html();
+
+        assert!(html.contains("const activePanel = isFab ? suggestionPanel : panel"));
+        assert!(html.contains("const inactivePanel = isFab ? panel : suggestionPanel"));
+        assert!(html.contains("renderSuggestionSurface(model)"));
+        assert!(html.contains("globalSuggestionToggle.addEventListener('click'"));
+        assert!(html.contains("suggestionDraft.addEventListener('input'"));
+        assert!(html.contains("suggestionSend.addEventListener('click'"));
+        assert!(html.contains("hideFab.addEventListener('click'"));
+        assert!(html.contains("syncSuggestionControlAvailability()"));
     }
 }

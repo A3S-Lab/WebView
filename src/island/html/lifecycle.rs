@@ -2,7 +2,11 @@ pub(super) const ISLAND_LIFECYCLE_SCRIPT: &str = r#"
     function flushPendingActivityRender() {
       if (!pendingActivityRender || !model || closing) return;
       pendingActivityRender = false;
-      renderActivities(model);
+      if (isFab) {
+        renderFabSurface(model);
+      } else {
+        renderActivities(model);
+      }
     }
 
     function finishResize() {
@@ -177,11 +181,15 @@ pub(super) const ISLAND_LIFECYCLE_SCRIPT: &str = r#"
       const accessible = expanded
         && !closing
         && !root.classList.contains('resizing');
-      panel.setAttribute('aria-hidden', accessible ? 'false' : 'true');
+      const activePanel = isFab ? suggestionPanel : panel;
+      const inactivePanel = isFab ? panel : suggestionPanel;
+      activePanel.setAttribute('aria-hidden', accessible ? 'false' : 'true');
+      inactivePanel.setAttribute('aria-hidden', 'true');
+      inactivePanel.setAttribute('inert', '');
       if (accessible) {
-        panel.removeAttribute('inert');
+        activePanel.removeAttribute('inert');
       } else {
-        panel.setAttribute('inert', '');
+        activePanel.setAttribute('inert', '');
       }
     }
 

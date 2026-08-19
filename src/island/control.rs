@@ -6,19 +6,40 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 const CONTROL_REQUEST_SCHEMA: &str = "a3s.agent_control_request.v1";
 const CONTROL_REQUEST_DIRECTORY: &str = "control-requests";
-const MAX_IPC_BYTES: usize = 6 * 1024;
+const MAX_IPC_BYTES: usize = 24 * 1024;
 const MAX_ACTIVITY_ID_CHARS: usize = 160;
 const MAX_INSTANCE_ID_CHARS: usize = 160;
 const CONTROL_TOKEN_HEX_CHARS: usize = 32;
-const MAX_REQUEST_BYTES: usize = 8 * 1024;
+pub(super) const MAX_REQUEST_BYTES: usize = 24 * 1024;
 const MAX_CONTROL_FUTURE_MS: u64 = 17_000;
 pub(crate) const MAX_REPLY_CHARS: usize = 1_000;
 const MAX_REPLY_BYTES: usize = 4 * 1024;
+const MAX_FORM_PAYLOAD_CHARS: usize = 4_096;
+const MAX_FORM_PAYLOAD_BYTES: usize = 12 * 1024;
+const MAX_SECRET_BYTES: usize = 16 * 1024;
+const MAX_VERIFICATION_CODE_CHARS: usize = 64;
 
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ControlTransport {
+    #[default]
+    DurableQueue,
+    EphemeralSocket,
+    #[serde(other)]
+    Unknown,
+}
+
+impl ControlTransport {
+    pub(crate) fn is_supported(self) -> bool {
+        !matches!(self, Self::Unknown)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,6 +50,14 @@ pub(crate) enum AgentControlActionKind {
     Stop,
     Cancel,
     Reply,
+    ApproveSuggestion,
+    DismissSuggestion,
+    EnableSuggestions,
+    DisableSuggestions,
+    StartChannelPairing,
+    AdvanceChannelPairing,
+    SaveLlmConfiguration,
+    SetLlmApiKey,
     #[default]
     #[serde(other)]
     Unknown,
@@ -47,6 +76,14 @@ impl AgentControlActionKind {
             Self::Stop => "Stop",
             Self::Cancel => "Cancel",
             Self::Reply => "Reply",
+            Self::ApproveSuggestion => "Send to Codex",
+            Self::DismissSuggestion => "Dismiss",
+            Self::EnableSuggestions => "Enable suggestions",
+            Self::DisableSuggestions => "Pause suggestions",
+            Self::StartChannelPairing => "Connect",
+            Self::AdvanceChannelPairing => "Continue",
+            Self::SaveLlmConfiguration => "Save settings",
+            Self::SetLlmApiKey => "Replace API key",
             Self::Unknown => "Unavailable",
         }
     }
@@ -57,6 +94,11 @@ impl AgentControlActionKind {
             Self::ApproveAlways => "always",
             Self::Deny | Self::Stop | Self::Cancel => "destructive",
             Self::Reply => "reply",
+            Self::ApproveSuggestion => "allow",
+            Self::DismissSuggestion => "destructive",
+            Self::EnableSuggestions | Self::DisableSuggestions => "toggle",
+            Self::StartChannelPairing | Self::AdvanceChannelPairing => "allow",
+            Self::SaveLlmConfiguration | Self::SetLlmApiKey => "allow",
             Self::Unknown => "muted",
         }
     }
@@ -66,6 +108,8 @@ impl AgentControlActionKind {
 pub(crate) struct ControlDescriptor {
     #[serde(default)]
     pub(crate) action: AgentControlActionKind,
+    #[serde(default)]
+    pub(crate) transport: ControlTransport,
     #[serde(default)]
     pub(crate) token: String,
     #[serde(default)]
@@ -77,6 +121,29 @@ pub(crate) struct ControlDescriptor {
 impl ControlDescriptor {
     pub(crate) fn sanitize(self, now_ms: u64) -> Option<Self> {
         (self.action.is_supported()
+            && self.transport.is_supported()
+            && matches!(
+                (self.action, self.transport),
+                (
+                    AgentControlActionKind::SetLlmApiKey,
+                    ControlTransport::EphemeralSocket
+                ) | (
+                    AgentControlActionKind::ApproveOnce
+                        | AgentControlActionKind::ApproveAlways
+                        | AgentControlActionKind::Deny
+                        | AgentControlActionKind::Stop
+                        | AgentControlActionKind::Cancel
+                        | AgentControlActionKind::Reply
+                        | AgentControlActionKind::ApproveSuggestion
+                        | AgentControlActionKind::DismissSuggestion
+                        | AgentControlActionKind::EnableSuggestions
+                        | AgentControlActionKind::DisableSuggestions
+                        | AgentControlActionKind::StartChannelPairing
+                        | AgentControlActionKind::AdvanceChannelPairing
+                        | AgentControlActionKind::SaveLlmConfiguration,
+                    ControlTransport::DurableQueue
+                )
+            )
             && valid_identifier(&self.target_instance_id, MAX_INSTANCE_ID_CHARS)
             && valid_token(&self.token)
             && self.expires_at_ms >= now_ms
@@ -85,13 +152,37 @@ impl ControlDescriptor {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ControlSubmission {
     pub(crate) activity_id: String,
     pub(crate) action: AgentControlActionKind,
+    pub(crate) transport: ControlTransport,
     pub(crate) message: Option<String>,
     pub(crate) token: String,
     pub(crate) target_instance_id: String,
+}
+
+impl std::fmt::Debug for ControlSubmission {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ControlSubmission")
+            .field("activity_id", &self.activity_id)
+            .field("action", &self.action)
+            .field("transport", &self.transport)
+            .field("message", &self.message.as_ref().map(|_| "[REDACTED]"))
+            .field("token", &"[REDACTED]")
+            .field("target_instance_id", &self.target_instance_id)
+            .finish()
+    }
+}
+
+impl Drop for ControlSubmission {
+    fn drop(&mut self) {
+        if let Some(message) = &mut self.message {
+            message.zeroize();
+        }
+        self.token.zeroize();
+    }
 }
 
 #[derive(Deserialize)]
@@ -100,6 +191,8 @@ struct ControlIpcMessage {
     message_type: String,
     activity_id: String,
     action: AgentControlActionKind,
+    #[serde(default)]
+    transport: ControlTransport,
     #[serde(default)]
     message: Option<String>,
     token: String,
@@ -112,12 +205,20 @@ pub(crate) fn parse_submission(body: &str) -> Option<ControlSubmission> {
     }
     let message: ControlIpcMessage = serde_json::from_str(body).ok()?;
     let reply = match message.action {
-        AgentControlActionKind::Reply => sanitize_reply(message.message)?,
+        AgentControlActionKind::Reply | AgentControlActionKind::ApproveSuggestion => {
+            sanitize_message(message.message)?
+        }
+        AgentControlActionKind::SaveLlmConfiguration => sanitize_form_payload(message.message)?,
+        AgentControlActionKind::SetLlmApiKey => sanitize_secret(message.message)?,
+        AgentControlActionKind::AdvanceChannelPairing => {
+            sanitize_optional_verification_code(message.message)?
+        }
         _ if message.message.is_none() => None,
         _ => return None,
     };
     if message.message_type != "control"
         || !message.action.is_supported()
+        || !message.transport.is_supported()
         || !valid_identifier(&message.activity_id, MAX_ACTIVITY_ID_CHARS)
         || !valid_identifier(&message.target_instance_id, MAX_INSTANCE_ID_CHARS)
         || !valid_token(&message.token)
@@ -127,20 +228,46 @@ pub(crate) fn parse_submission(body: &str) -> Option<ControlSubmission> {
     Some(ControlSubmission {
         activity_id: message.activity_id,
         action: message.action,
+        transport: message.transport,
         message: reply,
         token: message.token,
         target_instance_id: message.target_instance_id,
     })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct AuthorizedControl {
     pub(crate) activity_id: String,
     pub(crate) action: AgentControlActionKind,
+    pub(crate) transport: ControlTransport,
     pub(crate) message: Option<String>,
     pub(crate) token: String,
     pub(crate) target_instance_id: String,
     pub(crate) expires_at_ms: u64,
+}
+
+impl std::fmt::Debug for AuthorizedControl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthorizedControl")
+            .field("activity_id", &self.activity_id)
+            .field("action", &self.action)
+            .field("transport", &self.transport)
+            .field("message", &self.message.as_ref().map(|_| "[REDACTED]"))
+            .field("token", &"[REDACTED]")
+            .field("target_instance_id", &self.target_instance_id)
+            .field("expires_at_ms", &self.expires_at_ms)
+            .finish()
+    }
+}
+
+impl Drop for AuthorizedControl {
+    fn drop(&mut self) {
+        if let Some(message) = &mut self.message {
+            message.zeroize();
+        }
+        self.token.zeroize();
+    }
 }
 
 #[derive(Serialize)]
@@ -150,6 +277,7 @@ struct ControlProtocolRequest<'a> {
     target_instance_id: &'a str,
     activity_id: &'a str,
     action: AgentControlActionKind,
+    transport: ControlTransport,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<&'a str>,
     token: &'a str,
@@ -175,6 +303,11 @@ impl ControlQueue {
     }
 
     pub(crate) fn submit(&self, control: &AuthorizedControl, now_ms: u64) -> Result<(), String> {
+        if control.transport != ControlTransport::DurableQueue
+            || control.action == AgentControlActionKind::SetLlmApiKey
+        {
+            return Err("sensitive controls cannot use the durable queue".to_string());
+        }
         if control.expires_at_ms < now_ms
             || control.expires_at_ms > now_ms.saturating_add(MAX_CONTROL_FUTURE_MS)
         {
@@ -184,23 +317,7 @@ impl ControlQueue {
         ensure_private_directory(&self.queue)?;
         super::singleton::validate_private_directory(&self.queue)?;
 
-        let request_id = next_request_id(now_ms);
-        let request = ControlProtocolRequest {
-            schema: CONTROL_REQUEST_SCHEMA,
-            request_id: &request_id,
-            target_instance_id: &control.target_instance_id,
-            activity_id: &control.activity_id,
-            action: control.action,
-            message: control.message.as_deref(),
-            token: &control.token,
-            created_at_ms: now_ms,
-            expires_at_ms: control.expires_at_ms,
-        };
-        let bytes = serde_json::to_vec(&request)
-            .map_err(|error| format!("serialize control request: {error}"))?;
-        if bytes.len() > MAX_REQUEST_BYTES {
-            return Err("control request exceeds the size limit".to_string());
-        }
+        let (request_id, bytes) = encode_protocol_request(control, now_ms)?;
 
         let temporary = self.queue.join(format!(".control-{request_id}.tmp"));
         let path = self.queue.join(format!("control-{request_id}.json"));
@@ -230,6 +347,36 @@ impl ControlQueue {
     }
 }
 
+pub(super) fn encode_protocol_request(
+    control: &AuthorizedControl,
+    now_ms: u64,
+) -> Result<(String, Vec<u8>), String> {
+    if control.expires_at_ms < now_ms
+        || control.expires_at_ms > now_ms.saturating_add(MAX_CONTROL_FUTURE_MS)
+    {
+        return Err("control authorization expired".to_string());
+    }
+    let request_id = next_request_id(now_ms);
+    let request = ControlProtocolRequest {
+        schema: CONTROL_REQUEST_SCHEMA,
+        request_id: &request_id,
+        target_instance_id: &control.target_instance_id,
+        activity_id: &control.activity_id,
+        action: control.action,
+        transport: control.transport,
+        message: control.message.as_deref(),
+        token: &control.token,
+        created_at_ms: now_ms,
+        expires_at_ms: control.expires_at_ms,
+    };
+    let bytes = serde_json::to_vec(&request)
+        .map_err(|error| format!("serialize control request: {error}"))?;
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return Err("control request exceeds the size limit".to_string());
+    }
+    Ok((request_id, bytes))
+}
+
 fn next_request_id(now_ms: u64) -> String {
     let sequence = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     format!("{:x}-{now_ms:x}-{sequence:x}", std::process::id())
@@ -256,7 +403,7 @@ fn valid_token(token: &str) -> bool {
     token.len() == CONTROL_TOKEN_HEX_CHARS && token.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn sanitize_reply(message: Option<String>) -> Option<Option<String>> {
+fn sanitize_message(message: Option<String>) -> Option<Option<String>> {
     let message = message?;
     let trimmed = message.trim();
     if trimmed.is_empty()
@@ -273,6 +420,46 @@ fn sanitize_reply(message: Option<String>) -> Option<Option<String>> {
                         | '\u{2066}'..='\u{206f}'
                 )
         })
+    {
+        return None;
+    }
+    Some(Some(trimmed.to_string()))
+}
+
+fn sanitize_form_payload(message: Option<String>) -> Option<Option<String>> {
+    let message = message?;
+    let trimmed = message.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_FORM_PAYLOAD_BYTES
+        || trimmed.chars().count() > MAX_FORM_PAYLOAD_CHARS
+        || trimmed
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+    {
+        return None;
+    }
+    Some(Some(trimmed.to_string()))
+}
+
+fn sanitize_secret(message: Option<String>) -> Option<Option<String>> {
+    let message = message?;
+    if message.is_empty()
+        || message.len() > MAX_SECRET_BYTES
+        || message.chars().any(char::is_control)
+    {
+        return None;
+    }
+    Some(Some(message))
+}
+
+fn sanitize_optional_verification_code(message: Option<String>) -> Option<Option<String>> {
+    let Some(message) = message else {
+        return Some(None);
+    };
+    let trimmed = message.trim();
+    if trimmed.is_empty()
+        || trimmed.chars().count() > MAX_VERIFICATION_CODE_CHARS
+        || trimmed.chars().any(char::is_control)
     {
         return None;
     }
@@ -357,12 +544,48 @@ mod tests {
     }
 
     #[test]
+    fn suggestion_send_requires_the_complete_bounded_edited_draft() {
+        let send = r#"{"type":"control","activity_id":"suggestion:one","action":"approve_suggestion","message":"Re-check the exact boundary.","token":"0123456789abcdef0123456789abcdef","target_instance_id":"reviewer-surface"}"#;
+        let submission = parse_submission(send).unwrap();
+        assert_eq!(submission.action, AgentControlActionKind::ApproveSuggestion);
+        assert_eq!(
+            submission.message.as_deref(),
+            Some("Re-check the exact boundary.")
+        );
+
+        let missing = r#"{"type":"control","activity_id":"suggestion:one","action":"approve_suggestion","token":"0123456789abcdef0123456789abcdef","target_instance_id":"reviewer-surface"}"#;
+        assert!(parse_submission(missing).is_none());
+        let forged_dismiss = r#"{"type":"control","activity_id":"suggestion:one","action":"dismiss_suggestion","message":"hidden text","token":"0123456789abcdef0123456789abcdef","target_instance_id":"reviewer-surface"}"#;
+        assert!(parse_submission(forged_dismiss).is_none());
+    }
+
+    #[test]
+    fn api_keys_require_the_ephemeral_transport_and_are_redacted_from_debug() {
+        let body = r#"{"type":"control","activity_id":"llm:settings","action":"set_llm_api_key","transport":"ephemeral_socket","message":"top-secret-value","token":"0123456789abcdef0123456789abcdef","target_instance_id":"surface"}"#;
+        let submission = parse_submission(body).unwrap();
+        assert_eq!(submission.transport, ControlTransport::EphemeralSocket);
+        assert!(!format!("{submission:?}").contains("top-secret-value"));
+
+        let wrong_transport = body.replace("ephemeral_socket", "durable_queue");
+        let submission = parse_submission(&wrong_transport).unwrap();
+        let descriptor = ControlDescriptor {
+            action: submission.action,
+            transport: submission.transport,
+            token: submission.token.clone(),
+            target_instance_id: submission.target_instance_id.clone(),
+            expires_at_ms: 10_000,
+        };
+        assert!(descriptor.sanitize(1_000).is_none());
+    }
+
+    #[test]
     fn queue_publishes_one_private_versioned_request() {
         let directory = temp_dir();
         let queue = ControlQueue::for_snapshot(&directory.join("system-snapshot.json")).unwrap();
         let control = AuthorizedControl {
             activity_id: "instance:child".to_string(),
             action: AgentControlActionKind::Cancel,
+            transport: ControlTransport::DurableQueue,
             message: None,
             token: "0123456789abcdef0123456789abcdef".to_string(),
             target_instance_id: "instance".to_string(),
@@ -394,6 +617,24 @@ mod tests {
                 0o700
             );
         }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn durable_queue_rejects_secret_bearing_controls_before_creating_a_directory() {
+        let directory = temp_dir();
+        let queue = ControlQueue::for_snapshot(&directory.join("system-snapshot.json")).unwrap();
+        let control = AuthorizedControl {
+            activity_id: "llm:settings".to_string(),
+            action: AgentControlActionKind::SetLlmApiKey,
+            transport: ControlTransport::EphemeralSocket,
+            message: Some("top-secret-value".to_string()),
+            token: "0123456789abcdef0123456789abcdef".to_string(),
+            target_instance_id: "surface".to_string(),
+            expires_at_ms: 11_000,
+        };
+        assert!(queue.submit(&control, 1_000).is_err());
+        assert!(!directory.join(CONTROL_REQUEST_DIRECTORY).exists());
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

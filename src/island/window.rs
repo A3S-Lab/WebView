@@ -6,14 +6,46 @@ pub(crate) const COLLAPSED_WIDTH: f64 = 480.0;
 pub(crate) const COLLAPSED_HEIGHT: f64 = 72.0;
 pub(crate) const EXPANDED_WIDTH: f64 = 560.0;
 pub(crate) const EXPANDED_HEIGHT: f64 = 360.0;
+pub(crate) const FAB_COLLAPSED_WIDTH: f64 = 56.0;
+pub(crate) const FAB_COLLAPSED_HEIGHT: f64 = 56.0;
+pub(crate) const FAB_EXPANDED_WIDTH: f64 = 720.0;
+pub(crate) const FAB_EXPANDED_HEIGHT: f64 = 560.0;
 pub(crate) const HORIZONTAL_GLOW_INSET: f64 = 48.0;
 pub(crate) const VERTICAL_GLOW_INSET: f64 = 32.0;
 const TOP_MARGIN: f64 = 6.0;
+const FAB_TOP_MARGIN: f64 = 72.0;
 const SCREEN_INSET: f64 = 8.0;
 const NOTCH_SIDE_CONTENT: f64 = 160.0;
 const NOTCH_CLEARANCE: f64 = 12.0;
 const MIN_NOTCH_WIDTH: f64 = 48.0;
 const MIN_NOTCH_HEIGHT: f64 = 12.0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum IslandPresentation {
+    #[default]
+    Island,
+    Fab,
+}
+
+impl IslandPresentation {
+    pub(crate) const fn is_fab(self) -> bool {
+        matches!(self, Self::Fab)
+    }
+
+    const fn collapsed_height(self) -> f64 {
+        match self {
+            Self::Island => COLLAPSED_HEIGHT,
+            Self::Fab => FAB_COLLAPSED_HEIGHT,
+        }
+    }
+
+    const fn expanded_height(self) -> f64 {
+        match self {
+            Self::Island => EXPANDED_HEIGHT,
+            Self::Fab => FAB_EXPANDED_HEIGHT,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct ScreenProfile {
@@ -26,23 +58,27 @@ impl ScreenProfile {
         self.notch_width >= MIN_NOTCH_WIDTH && self.notch_height >= MIN_NOTCH_HEIGHT
     }
 
-    fn collapsed_width(self) -> f64 {
-        if self.has_notch() {
-            COLLAPSED_WIDTH.max(self.notch_width + NOTCH_CLEARANCE * 2.0 + NOTCH_SIDE_CONTENT * 2.0)
-        } else {
-            COLLAPSED_WIDTH
+    fn collapsed_width(self, presentation: IslandPresentation) -> f64 {
+        match presentation {
+            IslandPresentation::Fab => FAB_COLLAPSED_WIDTH,
+            IslandPresentation::Island if self.has_notch() => COLLAPSED_WIDTH
+                .max(self.notch_width + NOTCH_CLEARANCE * 2.0 + NOTCH_SIDE_CONTENT * 2.0),
+            IslandPresentation::Island => COLLAPSED_WIDTH,
         }
     }
 
-    fn expanded_width(self) -> f64 {
-        EXPANDED_WIDTH.max(self.collapsed_width())
+    fn expanded_width(self, presentation: IslandPresentation) -> f64 {
+        match presentation {
+            IslandPresentation::Island => EXPANDED_WIDTH.max(self.collapsed_width(presentation)),
+            IslandPresentation::Fab => FAB_EXPANDED_WIDTH,
+        }
     }
 
-    fn surface_top_margin(self) -> f64 {
-        if self.has_notch() {
-            0.0
-        } else {
-            TOP_MARGIN
+    fn surface_top_margin(self, presentation: IslandPresentation) -> f64 {
+        match presentation {
+            IslandPresentation::Fab => FAB_TOP_MARGIN,
+            IslandPresentation::Island if self.has_notch() => 0.0,
+            IslandPresentation::Island => TOP_MARGIN,
         }
     }
 }
@@ -54,10 +90,20 @@ pub(crate) enum IslandSize {
 }
 
 impl IslandSize {
-    fn logical_size(self, profile: ScreenProfile) -> LogicalSize<f64> {
+    fn logical_size(
+        self,
+        profile: ScreenProfile,
+        presentation: IslandPresentation,
+    ) -> LogicalSize<f64> {
         let surface = match self {
-            Self::Collapsed => LogicalSize::new(profile.collapsed_width(), COLLAPSED_HEIGHT),
-            Self::Expanded => LogicalSize::new(profile.expanded_width(), EXPANDED_HEIGHT),
+            Self::Collapsed => LogicalSize::new(
+                profile.collapsed_width(presentation),
+                presentation.collapsed_height(),
+            ),
+            Self::Expanded => LogicalSize::new(
+                profile.expanded_width(presentation),
+                presentation.expanded_height(),
+            ),
         };
         LogicalSize::new(
             surface.width + HORIZONTAL_GLOW_INSET * 2.0,
@@ -100,10 +146,15 @@ pub(crate) fn configure_event_loop<T: 'static>(event_loop: &mut EventLoop<T>) {
 
 pub(crate) fn create_window<T: 'static>(
     event_loop: &EventLoopWindowTarget<T>,
+    presentation: IslandPresentation,
 ) -> Result<Window, String> {
     let builder = WindowBuilder::new()
-        .with_title("A3S Agent Island")
-        .with_inner_size(IslandSize::Collapsed.logical_size(ScreenProfile::default()))
+        .with_title(if presentation.is_fab() {
+            "A3S Coding Reviewer"
+        } else {
+            "A3S Agent Island"
+        })
+        .with_inner_size(IslandSize::Collapsed.logical_size(ScreenProfile::default(), presentation))
         .with_visible(false)
         .with_focused(false)
         .with_focusable(false)
@@ -312,9 +363,13 @@ pub(crate) fn show_without_focus(window: &Window) {
     window.set_visible(true);
 }
 
-pub(crate) fn resize_and_center(window: &Window, size: IslandSize) -> ScreenProfile {
+pub(crate) fn resize_and_center(
+    window: &Window,
+    size: IslandSize,
+    presentation: IslandPresentation,
+) -> ScreenProfile {
     #[cfg(target_os = "macos")]
-    if let Some(profile) = resize_and_center_macos(window, size) {
+    if let Some(profile) = resize_and_center_macos(window, size, presentation) {
         return profile;
     }
 
@@ -323,7 +378,7 @@ pub(crate) fn resize_and_center(window: &Window, size: IslandSize) -> ScreenProf
         .primary_monitor()
         .or_else(|| window.current_monitor())
     else {
-        window.set_inner_size(size.logical_size(profile));
+        window.set_inner_size(size.logical_size(profile, presentation));
         return profile;
     };
     let geometry = MonitorGeometry {
@@ -331,7 +386,7 @@ pub(crate) fn resize_and_center(window: &Window, size: IslandSize) -> ScreenProf
         size: monitor.size(),
         scale_factor_millis: (monitor.scale_factor() * 1000.0).round().max(1.0) as u32,
     };
-    let layout = layout_for_monitor(geometry, size, profile);
+    let layout = layout_for_monitor(geometry, size, profile, presentation);
     if window.inner_size() != layout.size {
         window.set_inner_size(layout.size);
     }
@@ -346,7 +401,11 @@ pub(crate) fn resize_and_center(window: &Window, size: IslandSize) -> ScreenProf
 }
 
 #[cfg(target_os = "macos")]
-fn resize_and_center_macos(window: &Window, size: IslandSize) -> Option<ScreenProfile> {
+fn resize_and_center_macos(
+    window: &Window,
+    size: IslandSize,
+    presentation: IslandPresentation,
+) -> Option<ScreenProfile> {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSScreen, NSWindow};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
@@ -359,11 +418,11 @@ fn resize_and_center_macos(window: &Window, size: IslandSize) -> Option<ScreenPr
     let screen = NSScreen::mainScreen(mtm).or_else(|| ns_window.screen())?;
     let screen_frame = screen.frame();
     let profile = screen_profile_macos(&screen);
-    let requested = size.logical_size(profile);
+    let requested = size.logical_size(profile, presentation);
     let width = requested
         .width
         .min((screen_frame.size.width - SCREEN_INSET * 2.0).max(1.0));
-    let top_offset = profile.surface_top_margin() - VERTICAL_GLOW_INSET;
+    let top_offset = profile.surface_top_margin(presentation) - VERTICAL_GLOW_INSET;
     let height = requested
         .height
         .min((screen_frame.size.height - top_offset - SCREEN_INSET).max(1.0));
@@ -372,7 +431,11 @@ fn resize_and_center_macos(window: &Window, size: IslandSize) -> Option<ScreenPr
     // AppKit constrains the latter to visibleFrame (below the menu bar). Apply
     // the complete borderless frame synchronously against NSScreen.frame so a
     // status-level island can occupy the physical top edge without size drift.
-    let x = screen_frame.origin.x + (screen_frame.size.width - width) / 2.0;
+    let x = if presentation.is_fab() {
+        screen_frame.origin.x + screen_frame.size.width - width - SCREEN_INSET
+    } else {
+        screen_frame.origin.x + (screen_frame.size.width - width) / 2.0
+    };
     let y = screen_frame.origin.y + screen_frame.size.height - top_offset - height;
     let target = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
     let current = ns_window.frame();
@@ -395,9 +458,10 @@ pub(crate) fn resize_preserving_position(
     window: &Window,
     size: IslandSize,
     previous_profile: ScreenProfile,
+    presentation: IslandPresentation,
 ) -> ScreenProfile {
     #[cfg(target_os = "macos")]
-    if let Some(profile) = resize_preserving_position_macos(window, size) {
+    if let Some(profile) = resize_preserving_position_macos(window, size, presentation) {
         return profile;
     }
 
@@ -408,7 +472,7 @@ pub(crate) fn resize_preserving_position(
         .current_monitor()
         .map_or_else(|| window.scale_factor(), |monitor| monitor.scale_factor())
         .max(0.001);
-    let requested = size.logical_size(profile);
+    let requested = size.logical_size(profile, presentation);
     let new_size = PhysicalSize::new(
         (requested.width * scale).round().max(1.0) as u32,
         (requested.height * scale).round().max(1.0) as u32,
@@ -431,7 +495,11 @@ pub(crate) fn resize_preserving_position(
 }
 
 #[cfg(target_os = "macos")]
-fn resize_preserving_position_macos(window: &Window, size: IslandSize) -> Option<ScreenProfile> {
+fn resize_preserving_position_macos(
+    window: &Window,
+    size: IslandSize,
+    presentation: IslandPresentation,
+) -> Option<ScreenProfile> {
     use objc2_app_kit::NSWindow;
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use tao::platform::macos::WindowExtMacOS;
@@ -440,7 +508,7 @@ fn resize_preserving_position_macos(window: &Window, size: IslandSize) -> Option
     let screen = ns_window.screen()?;
     let profile = screen_profile_macos(&screen);
     let screen_frame = screen.frame();
-    let requested = size.logical_size(profile);
+    let requested = size.logical_size(profile, presentation);
     let width = requested
         .width
         .min((screen_frame.size.width - SCREEN_INSET * 2.0).max(1.0));
@@ -508,10 +576,16 @@ pub(crate) fn drag_window(window: &Window) -> Result<(), String> {
         .map_err(|error| format!("move agent island window: {error}"))
 }
 
-pub(crate) fn screen_profile_script(profile: ScreenProfile, attached: bool) -> String {
-    let notched = attached && profile.has_notch();
-    let collapsed_width = profile.collapsed_width();
-    let expanded_width = profile.expanded_width();
+pub(crate) fn screen_profile_script(
+    profile: ScreenProfile,
+    attached: bool,
+    presentation: IslandPresentation,
+) -> String {
+    let notched = attached && !presentation.is_fab() && profile.has_notch();
+    let collapsed_width = profile.collapsed_width(presentation);
+    let expanded_width = profile.expanded_width(presentation);
+    let collapsed_height = presentation.collapsed_height();
+    let expanded_height = presentation.expanded_height();
     let notch_width = if notched {
         profile.notch_width + NOTCH_CLEARANCE * 2.0
     } else {
@@ -519,7 +593,8 @@ pub(crate) fn screen_profile_script(profile: ScreenProfile, attached: bool) -> S
     };
     let notch_left = (collapsed_width - notch_width) / 2.0;
     format!(
-        "window.a3sIsland && window.a3sIsland.setScreenProfile({{notched:{notched},collapsedWidth:{collapsed_width:.2},expandedWidth:{expanded_width:.2},notchLeft:{notch_left:.2},notchWidth:{notch_width:.2},notchHeight:{:.2}}});",
+        "window.a3sIsland && window.a3sIsland.setScreenProfile({{fab:{},notched:{notched},collapsedWidth:{collapsed_width:.2},collapsedHeight:{collapsed_height:.2},expandedWidth:{expanded_width:.2},expandedHeight:{expanded_height:.2},notchLeft:{notch_left:.2},notchWidth:{notch_width:.2},notchHeight:{:.2}}});",
+        presentation.is_fab(),
         profile.notch_height
     )
 }
@@ -528,17 +603,24 @@ fn layout_for_monitor(
     monitor: MonitorGeometry,
     requested: IslandSize,
     profile: ScreenProfile,
+    presentation: IslandPresentation,
 ) -> WindowLayout {
     let scale = monitor.scale_factor().max(0.001);
-    let requested = requested.logical_size(profile);
+    let requested = requested.logical_size(profile, presentation);
     let max_width = (f64::from(monitor.size.width) / scale - SCREEN_INSET * 2.0).max(1.0);
-    let top_offset = profile.surface_top_margin() - VERTICAL_GLOW_INSET;
+    let top_offset = profile.surface_top_margin(presentation) - VERTICAL_GLOW_INSET;
     let max_height = (f64::from(monitor.size.height) / scale - top_offset - SCREEN_INSET).max(1.0);
     let logical_width = requested.width.min(max_width);
     let logical_height = requested.height.min(max_height);
     let width = (logical_width * scale).round().max(1.0) as u32;
     let height = (logical_height * scale).round().max(1.0) as u32;
-    let x_offset = (i64::from(monitor.size.width) - i64::from(width)) / 2;
+    let x_offset = if presentation.is_fab() {
+        i64::from(monitor.size.width)
+            .saturating_sub(i64::from(width))
+            .saturating_sub((SCREEN_INSET * scale).round() as i64)
+    } else {
+        (i64::from(monitor.size.width) - i64::from(width)) / 2
+    };
     let x = i64::from(monitor.position.x).saturating_add(x_offset);
     let y = i64::from(monitor.position.y).saturating_add((top_offset * scale).round() as i64);
     WindowLayout {
@@ -575,6 +657,7 @@ mod tests {
             },
             IslandSize::Collapsed,
             ScreenProfile::default(),
+            IslandPresentation::Island,
         );
         assert_eq!(layout.size, PhysicalSize::new(1152, 272));
         assert_eq!(layout.position, PhysicalPosition::new(936, -52));
@@ -590,6 +673,7 @@ mod tests {
             },
             IslandSize::Expanded,
             ScreenProfile::default(),
+            IslandPresentation::Island,
         );
         assert_eq!(layout.size, PhysicalSize::new(656, 424));
         assert_eq!(layout.position, PhysicalPosition::new(-1288, -146));
@@ -605,6 +689,7 @@ mod tests {
             },
             IslandSize::Expanded,
             ScreenProfile::default(),
+            IslandPresentation::Island,
         );
         assert!(layout.size.width <= 180);
         assert!(layout.size.height <= 123);
@@ -613,7 +698,8 @@ mod tests {
 
     #[test]
     fn glow_bleed_contains_the_collapsed_aura_before_native_clipping() {
-        let size = IslandSize::Collapsed.logical_size(ScreenProfile::default());
+        let size = IslandSize::Collapsed
+            .logical_size(ScreenProfile::default(), IslandPresentation::Island);
 
         assert_eq!(size, LogicalSize::new(576.0, 136.0));
         const {
@@ -629,8 +715,8 @@ mod tests {
         assert!(profile.has_notch());
         assert_eq!(profile.notch_width, 212.0);
         assert_eq!(profile.notch_height, 38.0);
-        assert_eq!(profile.collapsed_width(), 556.0);
-        assert_eq!(profile.surface_top_margin(), 0.0);
+        assert_eq!(profile.collapsed_width(IslandPresentation::Island), 556.0);
+        assert_eq!(profile.surface_top_margin(IslandPresentation::Island), 0.0);
 
         let layout = layout_for_monitor(
             MonitorGeometry {
@@ -640,6 +726,7 @@ mod tests {
             },
             IslandSize::Collapsed,
             profile,
+            IslandPresentation::Island,
         );
         assert_eq!(layout.size, PhysicalSize::new(1304, 272));
         assert_eq!(layout.position, PhysicalPosition::new(860, -64));
@@ -663,13 +750,43 @@ mod tests {
             notch_width: 212.0,
             notch_height: 38.0,
         };
-        let attached = screen_profile_script(profile, true);
-        let detached = screen_profile_script(profile, false);
+        let attached = screen_profile_script(profile, true, IslandPresentation::Island);
+        let detached = screen_profile_script(profile, false, IslandPresentation::Island);
 
         assert!(attached.contains("notched:true"), "{attached}");
         assert!(attached.contains("collapsedWidth:556.00"), "{attached}");
         assert!(attached.contains("notchWidth:236.00"), "{attached}");
         assert!(detached.contains("notched:false"), "{detached}");
         assert!(detached.contains("notchWidth:0.00"), "{detached}");
+    }
+
+    #[test]
+    fn fab_uses_compact_circle_geometry_and_initial_right_edge_placement() {
+        let profile = ScreenProfile {
+            notch_width: 212.0,
+            notch_height: 38.0,
+        };
+        let collapsed = IslandSize::Collapsed.logical_size(profile, IslandPresentation::Fab);
+        let expanded = IslandSize::Expanded.logical_size(profile, IslandPresentation::Fab);
+        assert_eq!(collapsed, LogicalSize::new(152.0, 120.0));
+        assert_eq!(expanded, LogicalSize::new(816.0, 624.0));
+
+        let layout = layout_for_monitor(
+            MonitorGeometry {
+                position: PhysicalPosition::new(0, 0),
+                size: PhysicalSize::new(1_920, 1_080),
+                scale_factor_millis: 1000,
+            },
+            IslandSize::Collapsed,
+            profile,
+            IslandPresentation::Fab,
+        );
+        assert_eq!(layout.position, PhysicalPosition::new(1_760, 40));
+        let script = screen_profile_script(profile, true, IslandPresentation::Fab);
+        assert!(script.contains("fab:true"), "{script}");
+        assert!(script.contains("notched:false"), "{script}");
+        assert!(script.contains("collapsedWidth:56.00"), "{script}");
+        assert!(script.contains("expandedWidth:720.00"), "{script}");
+        assert!(script.contains("expandedHeight:560.00"), "{script}");
     }
 }

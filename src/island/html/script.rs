@@ -17,6 +17,24 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
     const degraded = document.getElementById('degraded');
     const turnOff = document.getElementById('turn-off');
     const dragHandle = document.getElementById('drag-handle');
+    const fabBadge = document.getElementById('fab-badge');
+    const suggestionPanel = document.getElementById('suggestion-panel');
+    const suggestionSummary = document.getElementById('suggestion-summary');
+    const suggestionSessions = document.getElementById('suggestion-sessions');
+    const suggestionEmpty = document.getElementById('suggestion-empty');
+    const suggestionEditor = document.getElementById('suggestion-editor');
+    const suggestionTitle = document.getElementById('suggestion-title');
+    const suggestionMeta = document.getElementById('suggestion-meta');
+    const suggestionReason = document.getElementById('suggestion-reason');
+    const suggestionDraft = document.getElementById('suggestion-draft');
+    const suggestionResult = document.getElementById('suggestion-result');
+    const suggestionCopy = document.getElementById('suggestion-copy');
+    const suggestionDismiss = document.getElementById('suggestion-dismiss');
+    const suggestionSend = document.getElementById('suggestion-send');
+    const deliveryState = document.getElementById('delivery-state');
+    const globalSuggestionToggle = document.getElementById('global-suggestion-toggle');
+    const globalSuggestionLabel = document.getElementById('global-suggestion-label');
+    const hideFab = document.getElementById('hide-fab');
     const filterButtons = Array.from(document.querySelectorAll('.filter'));
     const countNodes = {
       all: document.getElementById('count-all'),
@@ -57,6 +75,8 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
     const seenAttentionKeys = new Set();
     const attentionKeyOrder = [];
     const replyDrafts = new Map();
+    const suggestionDrafts = new Map();
+    const isFab = root.classList.contains('fab-mode');
     const maxRememberedAttentionKeys = 1024;
     let selectedFilter = 'all';
     let expanded = false;
@@ -83,6 +103,9 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
     let neonTimer = 0;
     let elapsedTimer = 0;
     let model = null;
+    let selectedSuggestionSession = null;
+    let activeSuggestion = null;
+    let suggestionPending = null;
 
     const text = (node, value, fallback = '') => {
       node.textContent = typeof value === 'string' && value.length ? value : fallback;
@@ -113,12 +136,30 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
     function setScreenProfile(profile) {
       const dimension = (value, fallback, minimum, maximum) =>
         Number.isFinite(value) ? Math.min(maximum, Math.max(minimum, value)) : fallback;
-      const collapsedWidth = dimension(profile && profile.collapsedWidth, 480, 240, 1400);
+      const fabProfile = profile && profile.fab === true;
+      const collapsedWidth = dimension(
+        profile && profile.collapsedWidth,
+        fabProfile ? 56 : 480,
+        fabProfile ? 48 : 240,
+        1400
+      );
+      const collapsedHeight = dimension(
+        profile && profile.collapsedHeight,
+        fabProfile ? 56 : 72,
+        48,
+        240
+      );
       const expandedWidth = dimension(
         profile && profile.expandedWidth,
-        Math.max(560, collapsedWidth),
+        fabProfile ? 720 : Math.max(560, collapsedWidth),
         collapsedWidth,
         1400
+      );
+      const expandedHeight = dimension(
+        profile && profile.expandedHeight,
+        fabProfile ? 560 : 360,
+        collapsedHeight,
+        1200
       );
       const notchLeft = dimension(profile && profile.notchLeft, 0, 0, collapsedWidth);
       const notchWidth = dimension(
@@ -129,11 +170,14 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
       );
       const notchHeight = dimension(profile && profile.notchHeight, 0, 0, 120);
       root.style.setProperty('--collapsed-width', `${collapsedWidth}px`);
+      root.style.setProperty('--collapsed-height', `${collapsedHeight}px`);
       root.style.setProperty('--expanded-width', `${expandedWidth}px`);
+      root.style.setProperty('--expanded-height', `${expandedHeight}px`);
       root.style.setProperty('--notch-left', `${notchLeft}px`);
       root.style.setProperty('--notch-width', `${notchWidth}px`);
       root.style.setProperty('--notch-height', `${notchHeight}px`);
       root.classList.toggle('notched', profile && profile.notched === true);
+      root.classList.toggle('fab-mode', profile && profile.fab === true);
       root.classList.add('screen-ready');
     }
 
@@ -206,6 +250,7 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
         button.disabled = expired || input.value.trim().length === 0;
         if (expired) button.textContent = 'Expired';
       });
+      if (isFab) syncSuggestionControlAvailability();
     }
 
     function stopNeonTimer() {
@@ -766,6 +811,325 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
       restoreReplyFocus(focus);
     }
 
+    function controlFor(item, action) {
+      const controls = item && Array.isArray(item.controls) ? item.controls : [];
+      return controls.find(control => control.action === action) || null;
+    }
+
+    function suggestionModel(data) {
+      const items = Array.isArray(data.activities) ? data.activities : [];
+      const settings = items.find(item => item.kind === 'suggestion_settings') || null;
+      const sessions = items.filter(item => item.kind === 'suggestion_session');
+      const suggestions = items.filter(item => item.kind === 'coding_suggestion');
+      const bySession = new Map();
+      suggestions.forEach(item => {
+        const sessionId = typeof item.parent_id === 'string' && item.parent_id.length
+          ? item.parent_id
+          : item.id;
+        const group = bySession.get(sessionId) || [];
+        group.push(item);
+        bySession.set(sessionId, group);
+      });
+      suggestions.forEach(item => {
+        const sessionId = typeof item.parent_id === 'string' && item.parent_id.length
+          ? item.parent_id
+          : item.id;
+        if (sessions.some(session => session.id === sessionId)) return;
+        sessions.push({
+          ...item,
+          id: sessionId,
+          kind: 'suggestion_session',
+          enabled: item.enabled !== false,
+          controls: (item.controls || []).filter(control =>
+            control.action === 'enable_suggestions'
+            || control.action === 'disable_suggestions')
+        });
+      });
+      return { settings, sessions, suggestions, bySession };
+    }
+
+    function setSuggestionResult(message, error = false) {
+      text(suggestionResult, message, '');
+      suggestionResult.classList.toggle('error', error === true);
+    }
+
+    function setSuggestionPending(pending, message = '') {
+      if (message) setSuggestionResult(message);
+      root.classList.toggle('suggestion-pending', pending === true);
+      syncSuggestionControlAvailability();
+    }
+
+    function controlIsFresh(node, now = Date.now()) {
+      const expires = Number(node && node.dataset.expires);
+      return Number.isFinite(expires) && expires >= now;
+    }
+
+    function boundedSuggestionDraft() {
+      const value = suggestionDraft.value.trim();
+      if (!value || Array.from(value).length > 1000) return null;
+      try {
+        if (new TextEncoder().encode(value).length > 4096) return null;
+      } catch (_) {
+        if (value.length > 4096) return null;
+      }
+      return value;
+    }
+
+    function syncSuggestionControlAvailability() {
+      if (!isFab) return;
+      const pending = suggestionPending !== null;
+      const now = Date.now();
+      globalSuggestionToggle.disabled = pending
+        || globalSuggestionToggle.dataset.available !== 'true'
+        || !controlIsFresh(globalSuggestionToggle, now);
+      suggestionSessions.querySelectorAll('.session-toggle').forEach(button => {
+        button.disabled = pending
+          || button.dataset.available !== 'true'
+          || button.dataset.scopeEnabled !== 'true'
+          || !controlIsFresh(button, now);
+      });
+      const hasDraft = suggestionDraft.value.trim().length > 0;
+      const boundedDraft = boundedSuggestionDraft();
+      suggestionDraft.disabled = pending || suggestionDraft.dataset.editable !== 'true';
+      suggestionCopy.disabled = pending || !hasDraft;
+      suggestionDismiss.disabled = pending
+        || suggestionDismiss.dataset.available !== 'true'
+        || !controlIsFresh(suggestionDismiss, now);
+      suggestionSend.disabled = pending
+        || suggestionSend.dataset.available !== 'true'
+        || !controlIsFresh(suggestionSend, now)
+        || boundedDraft === null;
+      if (!pending && suggestionSend.dataset.available === 'true' && hasDraft && !boundedDraft) {
+        setSuggestionResult('Suggestion must fit within 1,000 characters and 4 KiB.', true);
+      }
+    }
+
+    function postSuggestionControl(item, control, message) {
+      if (!item || !control || Number(control.expires_at_ms) < Date.now()) {
+        setSuggestionResult('This authorization expired. Wait for the refreshed suggestion.', true);
+        return false;
+      }
+      suggestionPending = {
+        activityId: item.id,
+        action: control.action,
+        token: control.token
+      };
+      setSuggestionPending(true, 'Submitting exact request…');
+      const payload = {
+        type: 'control',
+        activity_id: item.id,
+        action: control.action,
+        transport: control.transport || 'durable_queue',
+        token: control.token,
+        target_instance_id: control.target_instance_id
+      };
+      if (typeof message === 'string') payload.message = message;
+      post(JSON.stringify(payload));
+      return true;
+    }
+
+    function sessionCopy(session, suggestion) {
+      const title = suggestion && suggestion.task
+        ? suggestion.task
+        : (session.task || session.agent || 'Codex session');
+      const context = session.workspace
+        || (suggestion && suggestion.workspace)
+        || 'Local Codex';
+      const status = suggestion
+        ? (suggestion.unread === true ? 'New suggestion' : 'Suggestion ready')
+        : (session.inferred === true ? 'Observed only' : 'No current suggestion');
+      return { title, context, status };
+    }
+
+    function sessionNode(session, suggestion, globalEnabled) {
+      const wrapper = document.createElement('div');
+      wrapper.className = `suggestion-session${session.id === selectedSuggestionSession ? ' active' : ''}`;
+      wrapper.dataset.sessionId = session.id;
+      const select = document.createElement('button');
+      select.type = 'button';
+      select.className = 'session-select';
+      select.setAttribute('aria-pressed', session.id === selectedSuggestionSession ? 'true' : 'false');
+      const copy = sessionCopy(session, suggestion);
+      const titleNode = document.createElement('strong');
+      titledText(titleNode, copy.title, 'Codex session');
+      const context = document.createElement('span');
+      titledText(context, copy.context, 'Local Codex');
+      const status = document.createElement('span');
+      status.className = suggestion ? 'session-attention' : '';
+      text(status, copy.status);
+      select.append(titleNode, context, status);
+      select.addEventListener('click', event => {
+        event.stopPropagation();
+        if (selectedSuggestionSession === session.id) return;
+        selectedSuggestionSession = session.id;
+        if (model) renderSuggestionSurface(model);
+      });
+
+      const enabled = session.enabled !== false;
+      const requestedAction = enabled ? 'disable_suggestions' : 'enable_suggestions';
+      let toggleOwner = session;
+      let toggleControl = controlFor(session, requestedAction);
+      if (!toggleControl && suggestion) {
+        toggleOwner = suggestion;
+        toggleControl = controlFor(suggestion, requestedAction);
+      }
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = `session-toggle${enabled ? ' enabled' : ''}`;
+      toggle.dataset.available = toggleControl ? 'true' : 'false';
+      toggle.dataset.expires = String(toggleControl ? toggleControl.expires_at_ms : 0);
+      toggle.dataset.scopeEnabled = globalEnabled ? 'true' : 'false';
+      toggle.disabled = !toggleControl || !globalEnabled;
+      toggle.setAttribute('aria-label', `${enabled ? 'Pause' : 'Enable'} suggestions for ${copy.title}`);
+      toggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+      toggle.title = enabled ? 'Pause suggestions for this session' : 'Enable suggestions for this session';
+      toggle.addEventListener('click', event => {
+        event.stopPropagation();
+        if (toggle.disabled) return;
+        postSuggestionControl(toggleOwner, toggleControl);
+      });
+      wrapper.append(select, toggle);
+      return wrapper;
+    }
+
+    function renderSuggestionEditor(session, suggestion, globalEnabled) {
+      activeSuggestion = suggestion || null;
+      if (!suggestion) {
+        suggestionDraft.dataset.editable = 'false';
+        suggestionDismiss.dataset.available = 'false';
+        suggestionDismiss.dataset.expires = '0';
+        suggestionSend.dataset.available = 'false';
+        suggestionSend.dataset.expires = '0';
+        suggestionEditor.hidden = true;
+        suggestionEmpty.hidden = false;
+        const emptyTitle = suggestionEmpty.querySelector('strong');
+        const emptyCopyNode = suggestionEmpty.querySelector('span');
+        text(emptyTitle, session ? 'No current suggestion' : 'Select a Codex session');
+        text(
+          emptyCopyNode,
+          session && session.enabled === false
+            ? 'Suggestions are paused for this session. Existing Codex work continues unchanged.'
+            : 'Suggestions stay quiet until there is actionable evidence.'
+        );
+        return;
+      }
+
+      suggestionEmpty.hidden = true;
+      suggestionEditor.hidden = false;
+      titledText(suggestionTitle, suggestion.task, 'Programming suggestion');
+      titledText(
+        suggestionMeta,
+        suggestion.workspace || (session && session.workspace),
+        suggestion.inferred === true || (session && session.inferred === true)
+          ? 'Observed Codex process'
+          : 'Managed Codex session'
+      );
+      text(
+        suggestionReason,
+        suggestion.reason,
+        'Review the current worktree and exact session context before sending.'
+      );
+      if (!suggestionDrafts.has(suggestion.id)) {
+        suggestionDrafts.set(suggestion.id, typeof suggestion.draft === 'string' ? suggestion.draft : '');
+      }
+      const draft = suggestionDrafts.get(suggestion.id) || '';
+      if (suggestionDraft.value !== draft) suggestionDraft.value = draft;
+      suggestionDraft.dataset.editable = 'true';
+      const approve = controlFor(suggestion, 'approve_suggestion');
+      const dismiss = controlFor(suggestion, 'dismiss_suggestion');
+      const sessionEnabled = session.enabled !== false && suggestion.enabled !== false;
+      const canSend = Boolean(approve) && globalEnabled && sessionEnabled;
+      deliveryState.classList.toggle('copy-only', !approve);
+      text(deliveryState, approve ? 'Approval required' : 'Copy only');
+      suggestionDismiss.dataset.available = dismiss ? 'true' : 'false';
+      suggestionDismiss.dataset.expires = String(dismiss ? dismiss.expires_at_ms : 0);
+      suggestionDismiss.disabled = !dismiss;
+      suggestionSend.dataset.available = canSend ? 'true' : 'false';
+      suggestionSend.dataset.expires = String(approve ? approve.expires_at_ms : 0);
+      suggestionSend.disabled = !canSend || suggestionDraft.value.trim().length === 0;
+      suggestionSend.textContent = approve ? 'Send to Codex' : 'Unavailable';
+      suggestionCopy.disabled = suggestionDraft.value.trim().length === 0;
+      setSuggestionResult(
+        !globalEnabled
+          ? 'Global suggestions are paused.'
+          : (!sessionEnabled ? 'Suggestions are paused for this session.' : '')
+      );
+      syncSuggestionControlAvailability();
+    }
+
+    function viewContainsPendingControl(view) {
+      if (!suggestionPending) return false;
+      const candidates = [view.settings, ...view.sessions, ...view.suggestions].filter(Boolean);
+      return candidates.some(item => item.id === suggestionPending.activityId
+        && controlFor(item, suggestionPending.action)
+        && controlFor(item, suggestionPending.action).token === suggestionPending.token);
+    }
+
+    function renderSuggestionSurface(data) {
+      const view = suggestionModel(data);
+      if (suggestionPending && !viewContainsPendingControl(view)) suggestionPending = null;
+      const globalEnabled = !view.settings || view.settings.enabled !== false;
+      const unread = globalEnabled
+        ? view.suggestions.filter(item => item.unread === true && item.enabled !== false).length
+        : 0;
+      fabBadge.classList.toggle('visible', unread > 0);
+      fabBadge.textContent = unread > 99 ? '99+' : String(unread || '');
+      fabBadge.setAttribute(
+        'aria-label',
+        unread > 0 ? plural(unread, 'new suggestion') : 'No new suggestions'
+      );
+      root.classList.toggle('has-attention', unread > 0);
+      globalSuggestionToggle.setAttribute('aria-checked', globalEnabled ? 'true' : 'false');
+      text(globalSuggestionLabel, globalEnabled ? 'Suggestions on' : 'Suggestions paused');
+      const globalControl = view.settings && controlFor(
+        view.settings,
+        globalEnabled ? 'disable_suggestions' : 'enable_suggestions'
+      );
+      globalSuggestionToggle.dataset.available = globalControl ? 'true' : 'false';
+      globalSuggestionToggle.dataset.expires = String(globalControl ? globalControl.expires_at_ms : 0);
+      globalSuggestionToggle.disabled = !globalControl;
+
+      const candidateIds = view.sessions.map(session => session.id);
+      if (!candidateIds.includes(selectedSuggestionSession)) {
+        const unreadSuggestion = view.suggestions.find(item => item.unread === true);
+        const readySuggestion = unreadSuggestion || view.suggestions[0];
+        selectedSuggestionSession = readySuggestion
+          ? (readySuggestion.parent_id || readySuggestion.id)
+          : (candidateIds[0] || null);
+      }
+      suggestionSessions.replaceChildren();
+      view.sessions.forEach(session => {
+        const suggestion = (view.bySession.get(session.id) || [])[0] || null;
+        suggestionSessions.append(sessionNode(session, suggestion, globalEnabled));
+      });
+      if (!view.sessions.length) {
+        const empty = document.createElement('div');
+        empty.className = 'suggestion-empty';
+        const title = document.createElement('strong');
+        title.textContent = 'No Codex sessions';
+        const detailNode = document.createElement('span');
+        detailNode.textContent = 'Managed and observed sessions will appear automatically.';
+        empty.append(title, detailNode);
+        suggestionSessions.append(empty);
+      }
+      const selectedSession = view.sessions.find(session => session.id === selectedSuggestionSession) || null;
+      const selectedSuggestion = selectedSession
+        ? ((view.bySession.get(selectedSession.id) || [])[0] || null)
+        : null;
+      renderSuggestionEditor(selectedSession, selectedSuggestion, globalEnabled);
+      suggestionSummary.textContent = [
+        plural(view.sessions.length, 'session'),
+        plural(view.suggestions.length, 'pending suggestion')
+      ].join(' · ');
+      summary.setAttribute(
+        'aria-label',
+        unread > 0
+          ? `${plural(unread, 'new suggestion')}. Open Coding Reviewer.`
+          : 'Open Coding Reviewer.'
+      );
+      setSuggestionPending(suggestionPending !== null);
+    }
+
     function rememberAttentionKey(key) {
       if (seenAttentionKeys.has(key)) return false;
       seenAttentionKeys.add(key);
@@ -802,6 +1166,7 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
         hasNewRequest = rememberAttentionKey(key) || hasNewRequest;
       });
       if (!hasNewRequest) return;
+      if (isFab) return;
       selectedFilter = 'needs_attention';
       requestExpand();
     }
@@ -829,6 +1194,8 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
       handleAttention(data);
       if (root.classList.contains('resizing') || opening || closing) {
         pendingActivityRender = true;
+      } else if (isFab) {
+        renderFabSurface(data);
       } else {
         renderActivities(data);
       }
@@ -838,6 +1205,28 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
 
     function controlResult(result) {
       if (!result || typeof result.activity_id !== 'string') return;
+      if (handleReviewerSettingsControlResult(result)) return;
+      if (
+        isFab
+        && [
+          'approve_suggestion',
+          'dismiss_suggestion',
+          'enable_suggestions',
+          'disable_suggestions'
+        ].includes(result.action)
+      ) {
+        if (result.accepted === true) {
+          if (result.action === 'approve_suggestion' && activeSuggestion) {
+            suggestionDrafts.delete(activeSuggestion.id);
+          }
+          setSuggestionPending(true, result.message || 'Queued');
+          return;
+        }
+        suggestionPending = null;
+        if (model) renderSuggestionSurface(model);
+        setSuggestionResult(result.message || 'Request changed. Review and try again.', true);
+        return;
+      }
       const row = Array.from(document.querySelectorAll('.activity'))
         .find(candidate => candidate.dataset.activityId === result.activity_id);
       if (!row) return;
@@ -870,8 +1259,9 @@ pub(super) const ISLAND_SCRIPT_START: &str = r#"
 
     function disableResult(accepted) {
       if (accepted === true) return;
-      turnOff.disabled = false;
-      turnOff.textContent = 'Try again';
+      const button = isFab ? hideFab : turnOff;
+      button.disabled = false;
+      button.textContent = 'Try again';
     }
 "#;
 
@@ -896,6 +1286,81 @@ pub(super) const ISLAND_SCRIPT_END: &str = r#"
         requestExpand();
       }
     });
+    summary.addEventListener('keydown', event => {
+      if (!['Enter', ' '].includes(event.key)) return;
+      event.preventDefault();
+      summary.click();
+    });
+    globalSuggestionToggle.addEventListener('click', event => {
+      event.stopPropagation();
+      if (!isFab || globalSuggestionToggle.disabled || !model) return;
+      const view = suggestionModel(model);
+      const enabled = !view.settings || view.settings.enabled !== false;
+      const control = controlFor(
+        view.settings,
+        enabled ? 'disable_suggestions' : 'enable_suggestions'
+      );
+      postSuggestionControl(view.settings, control);
+    });
+    suggestionDraft.addEventListener('input', event => {
+      event.stopPropagation();
+      if (!activeSuggestion) return;
+      suggestionDrafts.set(activeSuggestion.id, suggestionDraft.value);
+      setSuggestionResult('');
+      syncSuggestionControlAvailability();
+    });
+    suggestionDraft.addEventListener('click', event => event.stopPropagation());
+    suggestionDraft.addEventListener('keydown', event => {
+      event.stopPropagation();
+      if (event.key !== 'Enter' || (!event.metaKey && !event.ctrlKey)) return;
+      event.preventDefault();
+      suggestionSend.click();
+    });
+    suggestionCopy.addEventListener('click', async event => {
+      event.stopPropagation();
+      const value = suggestionDraft.value;
+      if (!value.trim() || suggestionCopy.disabled) return;
+      let copied = false;
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          await navigator.clipboard.writeText(value);
+          copied = true;
+        }
+      } catch (_) {}
+      if (!copied) {
+        const start = suggestionDraft.selectionStart;
+        const end = suggestionDraft.selectionEnd;
+        try {
+          suggestionDraft.focus({ preventScroll: true });
+          suggestionDraft.select();
+          copied = document.execCommand('copy');
+          suggestionDraft.setSelectionRange(start, end);
+        } catch (_) {}
+      }
+      setSuggestionResult(copied ? 'Copied. Paste it into the observed Codex session.' : 'Copy failed. Select the text and copy it manually.', !copied);
+    });
+    suggestionDismiss.addEventListener('click', event => {
+      event.stopPropagation();
+      if (!activeSuggestion || suggestionDismiss.disabled) return;
+      postSuggestionControl(
+        activeSuggestion,
+        controlFor(activeSuggestion, 'dismiss_suggestion')
+      );
+    });
+    suggestionSend.addEventListener('click', event => {
+      event.stopPropagation();
+      if (!activeSuggestion || suggestionSend.disabled) return;
+      const draft = boundedSuggestionDraft();
+      if (!draft) {
+        syncSuggestionControlAvailability();
+        return;
+      }
+      postSuggestionControl(
+        activeSuggestion,
+        controlFor(activeSuggestion, 'approve_suggestion'),
+        draft
+      );
+    });
     filterButtons.forEach(button => {
       button.addEventListener('click', event => {
         event.stopPropagation();
@@ -911,6 +1376,13 @@ pub(super) const ISLAND_SCRIPT_END: &str = r#"
       if (turnOff.disabled) return;
       turnOff.disabled = true;
       turnOff.textContent = 'Closing…';
+      post('disable');
+    });
+    hideFab.addEventListener('click', event => {
+      event.stopPropagation();
+      if (!isFab || hideFab.disabled) return;
+      hideFab.disabled = true;
+      hideFab.textContent = 'Hiding…';
       post('disable');
     });
     dragHandle.addEventListener('mousedown', event => {

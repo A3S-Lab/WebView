@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::control::{
     AgentControlActionKind, AuthorizedControl, ControlDescriptor, ControlSubmission,
+    ControlTransport,
 };
 
 pub(crate) const SNAPSHOT_SCHEMA: &str = "a3s.system_agent_snapshot.v1";
@@ -19,6 +20,16 @@ const MAX_WORKSPACE_CHARS: usize = 128;
 const MAX_TASK_CHARS: usize = 240;
 const MAX_REASON_CHARS: usize = 240;
 const MAX_CONTROL_ACTIONS: usize = 4;
+const MAX_SUGGESTION_DRAFT_CHARS: usize = 1_000;
+const MAX_SUGGESTION_DRAFT_BYTES: usize = 4 * 1024;
+const MAX_CHANNELS: usize = 32;
+const MAX_CHANNEL_NAME_CHARS: usize = 96;
+const MAX_PROTOCOL_VERSION_CHARS: usize = 64;
+const MAX_PROVIDER_CHARS: usize = 64;
+const MAX_MODEL_CHARS: usize = 256;
+const MAX_SECRET_REF_CHARS: usize = 256;
+const MAX_BASE_URL_CHARS: usize = 2_048;
+const MAX_QR_MATRIX_SIZE: usize = 177;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -146,6 +157,301 @@ pub(crate) enum AgentVendor {
     Other,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ActivityKind {
+    #[default]
+    Agent,
+    CodingSuggestion,
+    SuggestionSession,
+    SuggestionSettings,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SurfaceChannelState {
+    Disconnected,
+    Pairing,
+    Connected,
+    Degraded,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SurfacePairingState {
+    WaitingForScan,
+    Scanned,
+    VerificationRequired,
+    Connected,
+    AlreadyConnected,
+    Expired,
+    Failed,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct QrMatrix {
+    #[serde(default)]
+    size: usize,
+    #[serde(default)]
+    rows: Vec<String>,
+}
+
+impl QrMatrix {
+    fn validate(&self) -> bool {
+        self.size > 0
+            && self.size <= MAX_QR_MATRIX_SIZE
+            && self.rows.len() == self.size
+            && self.rows.iter().all(|row| {
+                row.len() == self.size && row.bytes().all(|value| matches!(value, b'0' | b'1'))
+            })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SurfacePairing {
+    #[serde(default)]
+    state: SurfacePairingState,
+    #[serde(default)]
+    expires_at_ms: u64,
+    #[serde(default)]
+    qr: Option<QrMatrix>,
+    #[serde(default)]
+    failure: Option<String>,
+    #[serde(default)]
+    actions: Vec<ControlDescriptor>,
+}
+
+impl SurfacePairing {
+    fn sanitize(mut self, now_ms: u64) -> Self {
+        self.qr = self.qr.filter(QrMatrix::validate);
+        self.failure = sanitize_optional(self.failure, MAX_REASON_CHARS);
+        self.actions = sanitize_controls(self.actions, now_ms, |action| {
+            action == AgentControlActionKind::AdvanceChannelPairing
+        });
+        self
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SurfaceChannel {
+    #[serde(default)]
+    activity_id: String,
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    protocol_version: String,
+    #[serde(default)]
+    state: SurfaceChannelState,
+    #[serde(default)]
+    qr_login: bool,
+    #[serde(default)]
+    text_commands: bool,
+    #[serde(default)]
+    account_count: usize,
+    #[serde(default)]
+    binding_count: usize,
+    #[serde(default)]
+    pairing: Option<SurfacePairing>,
+    #[serde(default)]
+    actions: Vec<ControlDescriptor>,
+}
+
+impl SurfaceChannel {
+    fn sanitize(mut self, now_ms: u64) -> Option<Self> {
+        self.activity_id = sanitize_text(&self.activity_id, MAX_ID_CHARS);
+        self.id = sanitize_text(&self.id, MAX_ID_CHARS);
+        if self.activity_id.is_empty() || self.id.is_empty() {
+            return None;
+        }
+        self.display_name = sanitize_text(&self.display_name, MAX_CHANNEL_NAME_CHARS);
+        if self.display_name.is_empty() {
+            self.display_name = self.id.clone();
+        }
+        self.protocol_version = sanitize_text(&self.protocol_version, MAX_PROTOCOL_VERSION_CHARS);
+        self.account_count = self.account_count.min(100_000);
+        self.binding_count = self.binding_count.min(100_000);
+        self.pairing = self.pairing.map(|pairing| pairing.sanitize(now_ms));
+        self.actions = sanitize_controls(self.actions, now_ms, |action| {
+            action == AgentControlActionKind::StartChannelPairing
+        });
+        Some(self)
+    }
+
+    fn all_controls(&self) -> impl Iterator<Item = &ControlDescriptor> {
+        self.actions.iter().chain(
+            self.pairing
+                .iter()
+                .flat_map(|pairing| pairing.actions.iter()),
+        )
+    }
+
+    fn retain_controls(&mut self, submitted: &std::collections::HashSet<String>) {
+        self.actions
+            .retain(|control| !submitted.contains(&control.token));
+        if let Some(pairing) = &mut self.pairing {
+            pairing
+                .actions
+                .retain(|control| !submitted.contains(&control.token));
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SurfaceLlmSettings {
+    #[serde(default)]
+    activity_id: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    api_key_ref: Option<String>,
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default = "default_evidence")]
+    evidence: String,
+    #[serde(default)]
+    share_project_habits: bool,
+    #[serde(default)]
+    share_project_knowledge: bool,
+    #[serde(default)]
+    share_project_transitions: bool,
+    #[serde(default)]
+    revision: u64,
+    #[serde(default)]
+    active_revision: Option<u64>,
+    #[serde(default)]
+    restart_required: bool,
+    #[serde(default)]
+    actions: Vec<ControlDescriptor>,
+}
+
+impl Default for SurfaceLlmSettings {
+    fn default() -> Self {
+        Self {
+            activity_id: String::new(),
+            enabled: false,
+            provider: None,
+            model: None,
+            api_key_ref: None,
+            base_url: None,
+            evidence: default_evidence(),
+            share_project_habits: false,
+            share_project_knowledge: false,
+            share_project_transitions: false,
+            revision: 0,
+            active_revision: None,
+            restart_required: false,
+            actions: Vec::new(),
+        }
+    }
+}
+
+impl SurfaceLlmSettings {
+    fn sanitize(mut self, now_ms: u64) -> Self {
+        self.activity_id = sanitize_text(&self.activity_id, MAX_ID_CHARS);
+        self.provider = sanitize_optional(self.provider, MAX_PROVIDER_CHARS);
+        self.model = sanitize_optional(self.model, MAX_MODEL_CHARS);
+        self.api_key_ref = sanitize_optional(self.api_key_ref, MAX_SECRET_REF_CHARS);
+        self.base_url = sanitize_optional(self.base_url, MAX_BASE_URL_CHARS);
+        if !matches!(self.evidence.as_str(), "metadata" | "redacted_error") {
+            self.evidence = default_evidence();
+        }
+        if !self.share_project_knowledge {
+            self.share_project_transitions = false;
+        }
+        self.actions = if self.activity_id.is_empty() {
+            Vec::new()
+        } else {
+            sanitize_controls(self.actions, now_ms, |action| {
+                matches!(
+                    action,
+                    AgentControlActionKind::SaveLlmConfiguration
+                        | AgentControlActionKind::SetLlmApiKey
+                )
+            })
+        };
+        self
+    }
+}
+
+fn default_evidence() -> String {
+    "metadata".to_string()
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SurfaceSettings {
+    #[serde(default)]
+    channels: Vec<SurfaceChannel>,
+    #[serde(default)]
+    llm: SurfaceLlmSettings,
+}
+
+impl SurfaceSettings {
+    fn sanitize(mut self, now_ms: u64) -> Self {
+        self.channels.truncate(MAX_CHANNELS);
+        self.channels = self
+            .channels
+            .into_iter()
+            .filter_map(|channel| channel.sanitize(now_ms))
+            .collect();
+        self.llm = self.llm.sanitize(now_ms);
+        self
+    }
+
+    fn all_controls(&self) -> impl Iterator<Item = (&str, &ControlDescriptor)> {
+        self.channels
+            .iter()
+            .flat_map(|channel| {
+                channel
+                    .all_controls()
+                    .map(move |control| (channel.activity_id.as_str(), control))
+            })
+            .chain(
+                self.llm
+                    .actions
+                    .iter()
+                    .map(|control| (self.llm.activity_id.as_str(), control)),
+            )
+    }
+
+    fn retain_controls(&mut self, submitted: &std::collections::HashSet<String>) {
+        for channel in &mut self.channels {
+            channel.retain_controls(submitted);
+        }
+        self.llm
+            .actions
+            .retain(|control| !submitted.contains(&control.token));
+    }
+}
+
+fn sanitize_controls(
+    controls: Vec<ControlDescriptor>,
+    now_ms: u64,
+    allowed: impl Fn(AgentControlActionKind) -> bool,
+) -> Vec<ControlDescriptor> {
+    let mut seen = std::collections::HashSet::new();
+    controls
+        .into_iter()
+        .filter_map(|control| control.sanitize(now_ms))
+        .filter(|control| allowed(control.action))
+        .filter(|control| seen.insert(control.action))
+        .take(MAX_CONTROL_ACTIONS)
+        .collect()
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Activity {
     #[serde(default)]
@@ -166,6 +472,14 @@ pub(crate) struct Activity {
     pub(crate) confidence: AgentConfidence,
     #[serde(default)]
     pub(crate) vendor: AgentVendor,
+    #[serde(default)]
+    pub(crate) kind: ActivityKind,
+    #[serde(default)]
+    pub(crate) draft: Option<String>,
+    #[serde(default)]
+    pub(crate) enabled: Option<bool>,
+    #[serde(default)]
+    pub(crate) unread: bool,
     #[serde(default)]
     pub(crate) started_at_ms: Option<u64>,
     #[serde(default)]
@@ -190,6 +504,15 @@ impl Activity {
         self.workspace = sanitize_optional(self.workspace, MAX_WORKSPACE_CHARS);
         self.task = sanitize_optional(self.task, MAX_TASK_CHARS);
         self.reason = sanitize_optional(self.reason, MAX_REASON_CHARS);
+        self.draft = self.draft.and_then(sanitize_suggestion_draft);
+        if self.kind == ActivityKind::CodingSuggestion
+            && (self.confidence != AgentConfidence::Exact || self.draft.is_none())
+        {
+            return None;
+        }
+        if self.kind != ActivityKind::CodingSuggestion {
+            self.unread = false;
+        }
         let latest_time = now_ms.saturating_add(SNAPSHOT_FUTURE_SKEW_MS);
         self.started_at_ms = self.started_at_ms.filter(|started| *started <= latest_time);
         self.finished_at_ms = self
@@ -206,6 +529,7 @@ impl Activity {
             .actions
             .into_iter()
             .filter_map(|action| action.sanitize(now_ms))
+            .filter(|action| action_allowed_for_kind(self.kind, action.action))
             .filter(|action| seen.insert(action.action))
             .take(MAX_CONTROL_ACTIONS)
             .collect();
@@ -236,6 +560,32 @@ impl Activity {
     }
 }
 
+fn action_allowed_for_kind(kind: ActivityKind, action: AgentControlActionKind) -> bool {
+    match kind {
+        ActivityKind::Agent => matches!(
+            action,
+            AgentControlActionKind::ApproveOnce
+                | AgentControlActionKind::ApproveAlways
+                | AgentControlActionKind::Deny
+                | AgentControlActionKind::Stop
+                | AgentControlActionKind::Cancel
+                | AgentControlActionKind::Reply
+        ),
+        ActivityKind::CodingSuggestion => matches!(
+            action,
+            AgentControlActionKind::ApproveSuggestion
+                | AgentControlActionKind::DismissSuggestion
+                | AgentControlActionKind::EnableSuggestions
+                | AgentControlActionKind::DisableSuggestions
+        ),
+        ActivityKind::SuggestionSession | ActivityKind::SuggestionSettings => matches!(
+            action,
+            AgentControlActionKind::EnableSuggestions | AgentControlActionKind::DisableSuggestions
+        ),
+        ActivityKind::Unknown => false,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ActivityCategory {
@@ -254,6 +604,8 @@ pub(crate) struct Snapshot {
     pub(crate) degraded: bool,
     #[serde(default)]
     pub(crate) activities: Vec<Activity>,
+    #[serde(default)]
+    settings: Option<SurfaceSettings>,
 }
 
 impl Snapshot {
@@ -278,6 +630,7 @@ impl Snapshot {
             .filter_map(|activity| activity.sanitize(now_ms, evidence_at_ms))
             .filter(|activity| activity.expires_at_ms.unwrap_or(legacy_expiry) >= now_ms)
             .collect();
+        snapshot.settings = snapshot.settings.map(|settings| settings.sanitize(now_ms));
         Ok(snapshot)
     }
 
@@ -321,6 +674,10 @@ impl Snapshot {
                     reason: activity.reason.as_deref(),
                     state: activity.state,
                     vendor: activity.vendor,
+                    kind: activity.kind,
+                    draft: activity.draft.as_deref(),
+                    enabled: activity.enabled,
+                    unread: activity.unread,
                     status: status.label,
                     tone: status.tone,
                     glyph: status.glyph,
@@ -335,6 +692,7 @@ impl Snapshot {
                         .iter()
                         .map(|control| RenderControl {
                             action: control.action,
+                            transport: control.transport,
                             label: control.action.label(),
                             tone: control.action.tone(),
                             token: &control.token,
@@ -366,6 +724,7 @@ impl Snapshot {
             metrics,
             attention_keys,
             activities,
+            settings: self.settings.as_ref(),
         })
         .map_err(|error| format!("serialize island snapshot: {error}"))
     }
@@ -380,30 +739,66 @@ impl Snapshot {
 
     pub(crate) fn authorize_control(
         &self,
-        submission: &ControlSubmission,
+        submission: &mut ControlSubmission,
         now_ms: u64,
     ) -> Option<AuthorizedControl> {
-        let activity = self
-            .activities
-            .iter()
-            .find(|activity| activity.id == submission.activity_id)?;
-        if activity.confidence != AgentConfidence::Exact {
-            return None;
-        }
-        let control = activity.actions.iter().find(|control| {
-            control.action == submission.action
-                && control.token == submission.token
-                && control.target_instance_id == submission.target_instance_id
-                && control.expires_at_ms >= now_ms
-        })?;
+        let activity_control = self.activities.iter().find_map(|activity| {
+            (activity.id == submission.activity_id && activity.confidence == AgentConfidence::Exact)
+                .then(|| {
+                    activity
+                        .actions
+                        .iter()
+                        .find(|control| matches_submission(control, submission, now_ms))
+                })
+                .flatten()
+        });
+        let settings_control = self.settings.as_ref().and_then(|settings| {
+            settings
+                .all_controls()
+                .find(|(activity_id, control)| {
+                    *activity_id == submission.activity_id
+                        && matches_submission(control, submission, now_ms)
+                })
+                .map(|(_, control)| control)
+        });
+        let control = activity_control.or(settings_control)?;
         Some(AuthorizedControl {
-            activity_id: activity.id.clone(),
+            activity_id: submission.activity_id.clone(),
             action: control.action,
-            message: submission.message.clone(),
+            transport: control.transport,
+            message: submission.message.take(),
             token: control.token.clone(),
             target_instance_id: control.target_instance_id.clone(),
             expires_at_ms: control.expires_at_ms,
         })
+    }
+
+    pub(crate) fn control_tokens(&self) -> std::collections::HashSet<&str> {
+        self.activities
+            .iter()
+            .flat_map(|activity| activity.actions.iter())
+            .map(|control| control.token.as_str())
+            .chain(
+                self.settings
+                    .iter()
+                    .flat_map(SurfaceSettings::all_controls)
+                    .map(|(_, control)| control.token.as_str()),
+            )
+            .collect()
+    }
+
+    pub(crate) fn retain_available_controls(
+        &mut self,
+        submitted: &std::collections::HashSet<String>,
+    ) {
+        for activity in &mut self.activities {
+            activity
+                .actions
+                .retain(|control| !submitted.contains(&control.token));
+        }
+        if let Some(settings) = &mut self.settings {
+            settings.retain_controls(submitted);
+        }
     }
 
     pub(crate) fn render_empty_json(updated_at_ms: u64, degraded: bool) -> Result<String, String> {
@@ -412,6 +807,7 @@ impl Snapshot {
             updated_at_ms,
             degraded,
             activities: Vec::new(),
+            settings: None,
         }
         .render_json()
     }
@@ -438,6 +834,7 @@ struct RenderSnapshot<'a> {
     metrics: RenderMetrics,
     attention_keys: Vec<String>,
     activities: Vec<RenderActivity<'a>>,
+    settings: Option<&'a SurfaceSettings>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -481,6 +878,10 @@ struct RenderActivity<'a> {
     reason: Option<&'a str>,
     state: AgentState,
     vendor: AgentVendor,
+    kind: ActivityKind,
+    draft: Option<&'a str>,
+    enabled: Option<bool>,
+    unread: bool,
     status: &'static str,
     tone: &'static str,
     glyph: &'static str,
@@ -502,11 +903,24 @@ struct RenderChildProgress {
 #[derive(Serialize)]
 struct RenderControl<'a> {
     action: AgentControlActionKind,
+    transport: ControlTransport,
     label: &'static str,
     tone: &'static str,
     token: &'a str,
     target_instance_id: &'a str,
     expires_at_ms: u64,
+}
+
+fn matches_submission(
+    control: &ControlDescriptor,
+    submission: &ControlSubmission,
+    now_ms: u64,
+) -> bool {
+    control.action == submission.action
+        && control.transport == submission.transport
+        && control.token == submission.token
+        && control.target_instance_id == submission.target_instance_id
+        && control.expires_at_ms >= now_ms
 }
 
 fn child_progress(activities: &[Activity], parent_id: &str) -> Option<RenderChildProgress> {
@@ -543,6 +957,7 @@ fn attention_keys(activities: &[Activity]) -> Vec<String> {
                                 action.action,
                                 AgentControlActionKind::ApproveOnce
                                     | AgentControlActionKind::ApproveAlways
+                                    | AgentControlActionKind::ApproveSuggestion
                                     | AgentControlActionKind::Deny
                             )
                         })
@@ -648,6 +1063,28 @@ fn sanitize_optional(value: Option<String>, max_chars: usize) -> Option<String> 
     value
         .map(|value| sanitize_text(&value, max_chars))
         .filter(|value| !value.is_empty())
+}
+
+fn sanitize_suggestion_draft(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_SUGGESTION_DRAFT_BYTES
+        || trimmed.chars().count() > MAX_SUGGESTION_DRAFT_CHARS
+        || trimmed.chars().any(|character| {
+            (character.is_control() && !matches!(character, '\n' | '\t'))
+                || matches!(
+                    character,
+                    '\u{061c}'
+                        | '\u{200e}'
+                        | '\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{206f}'
+                )
+        })
+    {
+        return None;
+    }
+    Some(trimmed.to_owned())
 }
 
 fn sanitize_text(value: &str, max_chars: usize) -> String {
@@ -846,15 +1283,20 @@ mod tests {
         assert_eq!(rendered["activities"][0]["controls"][0]["action"], "stop");
         assert_eq!(rendered["activities"][0]["controls"][0]["label"], "Stop");
 
-        let submission = ControlSubmission {
+        let mut submission = ControlSubmission {
             activity_id: "parent".to_string(),
             action: AgentControlActionKind::Stop,
+            transport: ControlTransport::DurableQueue,
             message: None,
             token: "0123456789abcdef0123456789abcdef".to_string(),
             target_instance_id: "parent".to_string(),
         };
-        assert!(snapshot.authorize_control(&submission, 10_000).is_some());
-        assert!(snapshot.authorize_control(&submission, 20_001).is_none());
+        assert!(snapshot
+            .authorize_control(&mut submission, 10_000)
+            .is_some());
+        assert!(snapshot
+            .authorize_control(&mut submission, 20_001)
+            .is_none());
     }
 
     #[test]
@@ -872,6 +1314,140 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn suggestion_projection_preserves_exact_draft_and_only_kind_specific_controls() {
+        let bytes = snapshot_json(
+            10_000,
+            r#"[
+                {"id":"settings","agent":"reviewer","kind":"suggestion_settings","state":"idle","confidence":"exact","enabled":true,"actions":[{"action":"disable_suggestions","token":"11111111111111111111111111111111","target_instance_id":"surface","expires_at_ms":20000},{"action":"stop","token":"22222222222222222222222222222222","target_instance_id":"surface","expires_at_ms":20000}]},
+                {"id":"session:managed","agent":"Codex","kind":"suggestion_session","workspace":"repo","state":"working","confidence":"exact","enabled":true,"actions":[{"action":"disable_suggestions","token":"33333333333333333333333333333333","target_instance_id":"surface","expires_at_ms":20000}]},
+                {"id":"suggestion:1","parent_id":"session:managed","agent":"Reviewer","kind":"coding_suggestion","task":"Guard the boundary","reason":"The changed parser trusts an unchecked length.","draft":"  Validate the exact byte limit before parsing.  ","state":"waiting_approval","confidence":"exact","unread":true,"actions":[{"action":"approve_suggestion","token":"44444444444444444444444444444444","target_instance_id":"surface","expires_at_ms":20000},{"action":"dismiss_suggestion","token":"44444444444444444444444444444444","target_instance_id":"surface","expires_at_ms":20000},{"action":"approve_once","token":"55555555555555555555555555555555","target_instance_id":"surface","expires_at_ms":20000}]}
+            ]"#,
+        );
+        let snapshot = Snapshot::parse(&bytes, 10_000).unwrap();
+        let rendered: serde_json::Value =
+            serde_json::from_str(&snapshot.render_json().unwrap()).unwrap();
+
+        assert_eq!(rendered["activities"][0]["kind"], "suggestion_settings");
+        assert_eq!(rendered["activities"][0]["enabled"], true);
+        assert_eq!(
+            rendered["activities"][0]["controls"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(rendered["activities"][2]["kind"], "coding_suggestion");
+        assert_eq!(
+            rendered["activities"][2]["draft"],
+            "Validate the exact byte limit before parsing."
+        );
+        assert_eq!(rendered["activities"][2]["unread"], true);
+        assert_eq!(
+            rendered["activities"][2]["controls"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let mut submission = ControlSubmission {
+            activity_id: "suggestion:1".to_string(),
+            action: AgentControlActionKind::ApproveSuggestion,
+            transport: ControlTransport::DurableQueue,
+            message: Some("Use a checked conversion before parsing.".to_string()),
+            token: "44444444444444444444444444444444".to_string(),
+            target_instance_id: "surface".to_string(),
+        };
+        let authorized = snapshot.authorize_control(&mut submission, 10_000).unwrap();
+        assert_eq!(
+            authorized.message.as_deref(),
+            Some("Use a checked conversion before parsing.")
+        );
+    }
+
+    #[test]
+    fn observed_session_can_show_an_exact_copy_only_suggestion_without_controls() {
+        let bytes = snapshot_json(
+            10_000,
+            r#"[
+                {"id":"session:observed","agent":"Codex","kind":"suggestion_session","workspace":"repo","state":"unknown","confidence":"process","enabled":true,"actions":[{"action":"enable_suggestions","token":"11111111111111111111111111111111","target_instance_id":"surface","expires_at_ms":20000}]},
+                {"id":"suggestion:observed","parent_id":"session:observed","agent":"Reviewer","kind":"coding_suggestion","task":"Review the boundary","draft":"Inspect the unchecked conversion.","state":"waiting_input","confidence":"exact","unread":true}
+            ]"#,
+        );
+        let snapshot = Snapshot::parse(&bytes, 10_000).unwrap();
+        let rendered: serde_json::Value =
+            serde_json::from_str(&snapshot.render_json().unwrap()).unwrap();
+
+        assert_eq!(rendered["activities"][0]["inferred"], true);
+        assert!(rendered["activities"][0]["controls"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            rendered["activities"][1]["draft"],
+            "Inspect the unchecked conversion."
+        );
+        assert!(rendered["activities"][1]["controls"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn malformed_or_oversized_suggestion_drafts_are_not_projected() {
+        let oversized = "界".repeat(MAX_SUGGESTION_DRAFT_CHARS + 1);
+        let activities = format!(
+            r#"[{{"id":"empty","agent":"Reviewer","kind":"coding_suggestion","draft":"  ","confidence":"exact"}},{{"id":"oversized","agent":"Reviewer","kind":"coding_suggestion","draft":"{oversized}","confidence":"exact"}}]"#
+        );
+        let snapshot = Snapshot::parse(&snapshot_json(10_000, &activities), 10_000).unwrap();
+
+        assert!(snapshot.activities.is_empty());
+    }
+
+    #[test]
+    fn settings_projection_preserves_transport_bound_channel_and_llm_controls() {
+        let bytes = format!(
+            r#"{{"schema":"{SNAPSHOT_SCHEMA}","updated_at_ms":10000,"degraded":false,"activities":[],"settings":{{"channels":[{{"activity_id":"channel:weixin","id":"weixin","display_name":"Weixin","protocol_version":"openclaw.v1","state":"pairing","qr_login":true,"text_commands":true,"account_count":0,"binding_count":0,"pairing":{{"state":"verification_required","expires_at_ms":20000,"qr":{{"size":2,"rows":["01","10"]}},"actions":[{{"action":"advance_channel_pairing","transport":"durable_queue","token":"11111111111111111111111111111111","target_instance_id":"surface","expires_at_ms":20000}}]}},"actions":[]}}],"llm":{{"activity_id":"llm:settings","enabled":true,"provider":"openai","model":"gpt-5","api_key_ref":"reviewer/openai","base_url":"https://api.openai.com/v1","evidence":"metadata","share_project_habits":true,"share_project_knowledge":true,"share_project_transitions":true,"revision":4,"active_revision":3,"restart_required":true,"actions":[{{"action":"save_llm_configuration","transport":"durable_queue","token":"22222222222222222222222222222222","target_instance_id":"surface","expires_at_ms":20000}},{{"action":"set_llm_api_key","transport":"ephemeral_socket","token":"33333333333333333333333333333333","target_instance_id":"surface","expires_at_ms":20000}}]}}}}}}"#
+        )
+        .into_bytes();
+        let mut snapshot = Snapshot::parse(&bytes, 10_000).unwrap();
+        let rendered: serde_json::Value =
+            serde_json::from_str(&snapshot.render_json().unwrap()).unwrap();
+
+        assert_eq!(rendered["settings"]["channels"][0]["id"], "weixin");
+        assert_eq!(
+            rendered["settings"]["channels"][0]["pairing"]["qr"]["rows"][1],
+            "10"
+        );
+        assert_eq!(rendered["settings"]["llm"]["restart_required"], true);
+        assert_eq!(
+            rendered["settings"]["llm"]["actions"][1]["transport"],
+            "ephemeral_socket"
+        );
+        assert_eq!(snapshot.control_tokens().len(), 3);
+
+        let mut secret = ControlSubmission {
+            activity_id: "llm:settings".to_string(),
+            action: AgentControlActionKind::SetLlmApiKey,
+            transport: ControlTransport::EphemeralSocket,
+            message: Some("top-secret-value".to_string()),
+            token: "33333333333333333333333333333333".to_string(),
+            target_instance_id: "surface".to_string(),
+        };
+        let authorized = snapshot.authorize_control(&mut secret, 10_000).unwrap();
+        assert_eq!(authorized.transport, ControlTransport::EphemeralSocket);
+        assert_eq!(authorized.message.as_deref(), Some("top-secret-value"));
+        assert!(!format!("{authorized:?}").contains("top-secret-value"));
+
+        snapshot.retain_available_controls(
+            &["33333333333333333333333333333333".to_string()]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(snapshot.control_tokens().len(), 2);
     }
 
     #[test]

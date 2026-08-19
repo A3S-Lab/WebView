@@ -1,6 +1,7 @@
 mod control;
 mod html;
 mod preference;
+mod sensitive;
 mod singleton;
 mod status;
 mod window;
@@ -16,10 +17,10 @@ use wry::{BackgroundThrottlingPolicy, WebViewBuilder};
 
 use self::singleton::IslandLock;
 use self::status::{read_snapshot, Snapshot, SNAPSHOT_FRESH_MS};
-use self::window::IslandSize;
+use self::window::{IslandPresentation, IslandSize};
 
 pub(crate) const USAGE: &str =
-    "usage: a3s-webview --agent-island --snapshot <absolute-path> --lock-file <absolute-path>";
+    "usage: a3s-webview --agent-island [--fab] --snapshot <absolute-path> --lock-file <absolute-path> [--sensitive-control-socket <absolute-path>]";
 const POLL_INTERVAL: Duration = Duration::from_millis(1_000);
 const RECENTER_INTERVAL: Duration = Duration::from_secs(2);
 const CLOSE_ANIMATION_TIMEOUT: Duration = Duration::from_millis(700);
@@ -29,23 +30,34 @@ const SHUTDOWN_GRACE_MS: u64 = 20_000;
 struct IslandArgs {
     snapshot: PathBuf,
     lock_file: PathBuf,
+    sensitive_control_socket: Option<PathBuf>,
+    presentation: IslandPresentation,
 }
 
 fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<IslandArgs, String> {
     let mut snapshot = None;
     let mut lock_file = None;
+    let mut sensitive_control_socket = None;
+    let mut presentation = IslandPresentation::Island;
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         let mut next = || it.next().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
             "--snapshot" => snapshot = Some(PathBuf::from(next()?)),
             "--lock-file" => lock_file = Some(PathBuf::from(next()?)),
+            "--sensitive-control-socket" => sensitive_control_socket = Some(PathBuf::from(next()?)),
+            "--fab" => presentation = IslandPresentation::Fab,
             other => return Err(format!("unknown agent-island argument: {other}")),
         }
     }
     let snapshot = snapshot.ok_or("--snapshot is required")?;
     let lock_file = lock_file.ok_or("--lock-file is required")?;
-    if !snapshot.is_absolute() || !lock_file.is_absolute() {
+    if !snapshot.is_absolute()
+        || !lock_file.is_absolute()
+        || sensitive_control_socket
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute())
+    {
         return Err("agent-island paths must be absolute".to_string());
     }
     if snapshot == lock_file {
@@ -54,9 +66,21 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<IslandArgs, Str
     if snapshot.parent() != lock_file.parent() {
         return Err("snapshot and lock paths must share one private directory".to_string());
     }
+    if presentation.is_fab() && sensitive_control_socket.is_none() {
+        return Err("--sensitive-control-socket is required with --fab".to_string());
+    }
+    if let Some(path) = &sensitive_control_socket {
+        if path == &snapshot || path == &lock_file || path.parent() != snapshot.parent() {
+            return Err(
+                "sensitive socket must be a distinct sibling of the snapshot and lock".to_string(),
+            );
+        }
+    }
     Ok(IslandArgs {
         snapshot,
         lock_file,
+        sensitive_control_socket,
+        presentation,
     })
 }
 
@@ -99,13 +123,14 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
 
     let mut event_loop = EventLoopBuilder::<IslandEvent>::with_user_event().build();
     window::configure_event_loop(&mut event_loop);
-    let window = window::create_window(&event_loop)?;
+    let presentation = args.presentation;
+    let window = window::create_window(&event_loop, presentation)?;
     window::configure_native_window(&window, false)?;
-    window::resize_and_center(&window, IslandSize::Collapsed);
+    window::resize_and_center(&window, IslandSize::Collapsed, presentation);
 
     let proxy = event_loop.create_proxy();
     let builder = WebViewBuilder::new()
-        .with_html(html::island_html())
+        .with_html(html::island_html(presentation))
         .with_transparent(true)
         .with_accept_first_mouse(true)
         .with_focused(false)
@@ -122,14 +147,20 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
     configure_webview_resize_behavior(&webview);
     // Wry may adjust its host frame while attaching WKWebView. Reassert the
     // exact physical top-center frame after attachment and before first show.
-    let mut screen_profile = window::resize_and_center(&window, IslandSize::Collapsed);
+    let mut screen_profile =
+        window::resize_and_center(&window, IslandSize::Collapsed, presentation);
     let mut webview_bounds = None;
     sync_webview_bounds(&webview, &window, &mut webview_bounds)?;
     window::configure_native_window(&window, false)?;
 
     let started = Instant::now();
     let preference_snapshot = args.snapshot.clone();
-    let mut snapshots = SnapshotRuntime::new(args.snapshot, started)?;
+    let mut snapshots = SnapshotRuntime::new(
+        args.snapshot,
+        args.sensitive_control_socket,
+        started,
+        presentation,
+    )?;
     let mut next_poll = Instant::now();
     let mut next_recenter = Instant::now() + RECENTER_INTERVAL;
     let mut web_ready = false;
@@ -150,7 +181,8 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
         match event {
             Event::UserEvent(IslandEvent::Ready) => {
                 web_ready = true;
-                if let Err(error) = apply_screen_profile(&webview, screen_profile, !user_positioned)
+                if let Err(error) =
+                    apply_screen_profile(&webview, screen_profile, !user_positioned, presentation)
                 {
                     eprintln!("a3s-webview: agent island: {error}");
                     *control_flow = ControlFlow::Exit;
@@ -185,16 +217,22 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                         &window,
                         IslandSize::Expanded,
                         screen_profile,
+                        presentation,
                     )
                 } else {
-                    window::resize_and_center(&window, IslandSize::Expanded)
+                    window::resize_and_center(&window, IslandSize::Expanded, presentation)
                 };
                 next_recenter = now + RECENTER_INTERVAL;
                 if let Err(error) =
                     sync_webview_bounds_after_native_resize(&webview, &window, &mut webview_bounds)
                         .and_then(|()| window::configure_native_window(&window, true))
                         .and_then(|()| {
-                            apply_screen_profile(&webview, screen_profile, !user_positioned)
+                            apply_screen_profile(
+                                &webview,
+                                screen_profile,
+                                !user_positioned,
+                                presentation,
+                            )
                         })
                 {
                     eprintln!("a3s-webview: agent island: {error}");
@@ -216,9 +254,10 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                             &window,
                             IslandSize::Collapsed,
                             screen_profile,
+                            presentation,
                         )
                     } else {
-                        window::resize_and_center(&window, IslandSize::Collapsed)
+                        window::resize_and_center(&window, IslandSize::Collapsed, presentation)
                     };
                     next_recenter = now + RECENTER_INTERVAL;
                     if let Err(error) = sync_webview_bounds_after_native_resize(
@@ -227,8 +266,14 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                         &mut webview_bounds,
                     )
                     .and_then(|()| window::configure_native_window(&window, false))
-                    .and_then(|()| apply_screen_profile(&webview, screen_profile, !user_positioned))
-                    {
+                    .and_then(|()| {
+                        apply_screen_profile(
+                            &webview,
+                            screen_profile,
+                            !user_positioned,
+                            presentation,
+                        )
+                    }) {
                         eprintln!("a3s-webview: agent island: {error}");
                         *control_flow = ControlFlow::Exit;
                         return;
@@ -262,10 +307,18 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                             IslandSize::Collapsed
                         },
                         screen_profile,
+                        presentation,
                     );
                 }
                 if let Err(error) = sync_webview_bounds(&webview, &window, &mut webview_bounds)
-                    .and_then(|()| apply_screen_profile(&webview, screen_profile, !user_positioned))
+                    .and_then(|()| {
+                        apply_screen_profile(
+                            &webview,
+                            screen_profile,
+                            !user_positioned,
+                            presentation,
+                        )
+                    })
                 {
                     eprintln!("a3s-webview: agent island: {error}");
                     *control_flow = ControlFlow::Exit;
@@ -297,11 +350,21 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
             Event::UserEvent(IslandEvent::Control(submission)) if !closing => {
                 let activity_id = submission.activity_id.clone();
                 let action = submission.action;
+                let transport = submission.transport;
                 let result = snapshots.submit_control(submission, epoch_ms());
                 let (accepted, message) = match result {
                     Ok(()) => (
                         true,
-                        if action == control::AgentControlActionKind::Reply {
+                        if transport == control::ControlTransport::EphemeralSocket {
+                            "Saved"
+                        } else if matches!(
+                            action,
+                            control::AgentControlActionKind::Reply
+                                | control::AgentControlActionKind::ApproveSuggestion
+                                | control::AgentControlActionKind::DismissSuggestion
+                                | control::AgentControlActionKind::EnableSuggestions
+                                | control::AgentControlActionKind::DisableSuggestions
+                        ) {
                             "Queued"
                         } else {
                             "Sent"
@@ -377,11 +440,17 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                             } else {
                                 IslandSize::Collapsed
                             },
+                            presentation,
                         );
                     }
                     if let Err(error) = sync_webview_bounds(&webview, &window, &mut webview_bounds)
                         .and_then(|()| {
-                            apply_screen_profile(&webview, screen_profile, !user_positioned)
+                            apply_screen_profile(
+                                &webview,
+                                screen_profile,
+                                !user_positioned,
+                                presentation,
+                            )
                         })
                     {
                         eprintln!("a3s-webview: agent island: {error}");
@@ -504,9 +573,14 @@ fn apply_screen_profile(
     webview: &wry::WebView,
     profile: window::ScreenProfile,
     attached: bool,
+    presentation: IslandPresentation,
 ) -> Result<(), String> {
     webview
-        .evaluate_script(&window::screen_profile_script(profile, attached))
+        .evaluate_script(&window::screen_profile_script(
+            profile,
+            attached,
+            presentation,
+        ))
         .map_err(|error| format!("apply agent island screen profile: {error}"))
 }
 
@@ -520,6 +594,7 @@ fn begin_close_animation(webview: &wry::WebView, now: Instant) -> Result<Instant
 struct SnapshotRuntime {
     path: PathBuf,
     control_queue: control::ControlQueue,
+    sensitive_control: Option<sensitive::SensitiveControlClient>,
     started: Instant,
     watchdog: ShutdownWatchdog,
     current_payload: Option<String>,
@@ -530,6 +605,7 @@ struct SnapshotRuntime {
     submitted_control_tokens: HashSet<String>,
     sent_payload: Option<String>,
     last_error: Option<String>,
+    presentation: IslandPresentation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -540,11 +616,20 @@ enum SnapshotObservation {
 }
 
 impl SnapshotRuntime {
-    fn new(path: PathBuf, started: Instant) -> Result<Self, String> {
+    fn new(
+        path: PathBuf,
+        sensitive_control_socket: Option<PathBuf>,
+        started: Instant,
+        presentation: IslandPresentation,
+    ) -> Result<Self, String> {
         let control_queue = control::ControlQueue::for_snapshot(&path)?;
+        let sensitive_control = sensitive_control_socket
+            .map(sensitive::SensitiveControlClient::new)
+            .transpose()?;
         Ok(Self {
             path,
             control_queue,
+            sensitive_control,
             started,
             watchdog: ShutdownWatchdog::new(0),
             current_payload: None,
@@ -555,6 +640,7 @@ impl SnapshotRuntime {
             submitted_control_tokens: HashSet::new(),
             sent_payload: None,
             last_error: None,
+            presentation,
         })
     }
 
@@ -654,21 +740,12 @@ impl SnapshotRuntime {
             return Ok(SnapshotObservation::Unavailable);
         }
 
-        self.current_useful = snapshot.has_visible_activity();
-        let current_tokens = snapshot
-            .activities
-            .iter()
-            .flat_map(|activity| activity.actions.iter())
-            .map(|action| action.token.as_str())
-            .collect::<HashSet<_>>();
+        self.current_useful = self.presentation.is_fab() || snapshot.has_visible_activity();
+        let current_tokens = snapshot.control_tokens();
         self.submitted_control_tokens
             .retain(|token| current_tokens.contains(token.as_str()));
         let mut snapshot = snapshot;
-        for activity in &mut snapshot.activities {
-            activity
-                .actions
-                .retain(|action| !self.submitted_control_tokens.contains(&action.token));
-        }
+        snapshot.retain_available_controls(&self.submitted_control_tokens);
         self.current_payload = Some(snapshot.render_json()?);
         self.current_snapshot = Some(snapshot);
         Ok(if self.current_useful {
@@ -711,7 +788,7 @@ impl SnapshotRuntime {
 
     fn submit_control(
         &mut self,
-        submission: control::ControlSubmission,
+        mut submission: control::ControlSubmission,
         now_ms: u64,
     ) -> Result<(), String> {
         if self.submitted_control_tokens.contains(&submission.token) {
@@ -720,10 +797,26 @@ impl SnapshotRuntime {
         let control = self
             .current_snapshot
             .as_ref()
-            .and_then(|snapshot| snapshot.authorize_control(&submission, now_ms))
+            .and_then(|snapshot| snapshot.authorize_control(&mut submission, now_ms))
             .ok_or_else(|| "control decision is stale or unavailable".to_string())?;
-        self.control_queue.submit(&control, now_ms)?;
-        self.submitted_control_tokens.insert(control.token);
+        match control.transport {
+            control::ControlTransport::DurableQueue => {
+                self.control_queue.submit(&control, now_ms)?;
+            }
+            control::ControlTransport::EphemeralSocket => {
+                let mut control = control;
+                self.sensitive_control
+                    .as_ref()
+                    .ok_or_else(|| "sensitive control socket is unavailable".to_string())?
+                    .submit(&mut control, now_ms)?;
+                self.submitted_control_tokens.insert(control.token.clone());
+                return Ok(());
+            }
+            control::ControlTransport::Unknown => {
+                return Err("control transport is unavailable".to_string());
+            }
+        }
+        self.submitted_control_tokens.insert(control.token.clone());
         Ok(())
     }
 
@@ -817,6 +910,25 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.snapshot, root.join("system-snapshot.json"));
         assert_eq!(parsed.lock_file, root.join("island.lock"));
+        assert_eq!(parsed.presentation, IslandPresentation::Island);
+
+        let fab = parse_args([
+            "--fab".to_string(),
+            "--snapshot".to_string(),
+            root.join("suggestions.json").to_string_lossy().into_owned(),
+            "--lock-file".to_string(),
+            root.join("suggestions.lock").to_string_lossy().into_owned(),
+            "--sensitive-control-socket".to_string(),
+            root.join("sensitive-control.sock")
+                .to_string_lossy()
+                .into_owned(),
+        ])
+        .unwrap();
+        assert_eq!(fab.presentation, IslandPresentation::Fab);
+        assert_eq!(
+            fab.sensitive_control_socket,
+            Some(root.join("sensitive-control.sock"))
+        );
     }
 
     #[test]
@@ -948,8 +1060,13 @@ mod tests {
         );
         let snapshot = Snapshot::parse(bytes.as_bytes(), 1_000).unwrap();
         let started = Instant::now();
-        let mut runtime =
-            SnapshotRuntime::new(std::env::temp_dir().join("snapshot.json"), started).unwrap();
+        let mut runtime = SnapshotRuntime::new(
+            std::env::temp_dir().join("snapshot.json"),
+            None,
+            started,
+            IslandPresentation::Island,
+        )
+        .unwrap();
 
         runtime.display_snapshot(snapshot, 1_000, started).unwrap();
         runtime
@@ -979,8 +1096,13 @@ mod tests {
         );
         let snapshot = Snapshot::parse(bytes.as_bytes(), 1_000).unwrap();
         let started = Instant::now();
-        let mut runtime =
-            SnapshotRuntime::new(std::env::temp_dir().join("snapshot.json"), started).unwrap();
+        let mut runtime = SnapshotRuntime::new(
+            std::env::temp_dir().join("snapshot.json"),
+            None,
+            started,
+            IslandPresentation::Island,
+        )
+        .unwrap();
 
         assert_eq!(
             runtime
@@ -1011,8 +1133,13 @@ mod tests {
         );
         let snapshot = Snapshot::parse(bytes.as_bytes(), 1_000).unwrap();
         let started = Instant::now();
-        let mut runtime =
-            SnapshotRuntime::new(std::env::temp_dir().join("snapshot.json"), started).unwrap();
+        let mut runtime = SnapshotRuntime::new(
+            std::env::temp_dir().join("snapshot.json"),
+            None,
+            started,
+            IslandPresentation::Island,
+        )
+        .unwrap();
 
         assert_eq!(
             runtime.display_snapshot(snapshot, 1_000, started).unwrap(),
@@ -1029,8 +1156,13 @@ mod tests {
         );
         let snapshot = Snapshot::parse(bytes.as_bytes(), 1_000).unwrap();
         let started = Instant::now();
-        let mut runtime =
-            SnapshotRuntime::new(std::env::temp_dir().join("snapshot.json"), started).unwrap();
+        let mut runtime = SnapshotRuntime::new(
+            std::env::temp_dir().join("snapshot.json"),
+            None,
+            started,
+            IslandPresentation::Island,
+        )
+        .unwrap();
 
         assert_eq!(
             runtime.display_snapshot(snapshot, 1_000, started).unwrap(),
