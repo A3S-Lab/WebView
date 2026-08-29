@@ -79,6 +79,8 @@ required = {
     "remote-loaded",
     "remote-ready",
     "remote-same-origin-navigation",
+    "renderer-isolated",
+    "renderer-isolation-declared",
     "remote-cross-origin-navigation-blocked",
 }
 url = os.environ["SMOKE_STATE_URL"]
@@ -95,7 +97,12 @@ while time.monotonic() < deadline:
     if required <= steps and not last.get("forbiddenRequests"):
         print(json.dumps(last, indent=2, sort_keys=True))
         sys.exit(0)
-    if last.get("forbiddenRequests") or "state-lost" in steps or "bridge-missing" in steps:
+    if (
+        last.get("forbiddenRequests")
+        or "state-lost" in steps
+        or "bridge-missing" in steps
+        or "renderer-shared" in steps
+    ):
         break
     time.sleep(0.1)
 

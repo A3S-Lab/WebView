@@ -344,6 +344,18 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                                 );
                                 return;
                             }
+                        } else if view.occluded {
+                            if let Err(error) = hide_webview(&view.webview, &window, true) {
+                                view.ready = false;
+                                emit_lifecycle(
+                                    &shell_webview,
+                                    &identity,
+                                    "error",
+                                    Some(&view.url),
+                                    Some(&error),
+                                );
+                                return;
+                            }
                         }
                         emit_lifecycle(&shell_webview, &identity, "ready", Some(&view.url), None);
                     }
@@ -392,11 +404,12 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                 if started {
                     view.ready = false;
                     view.load_deadline = Some(Instant::now() + LOAD_TIMEOUT);
-                    let staged = if view.occluded {
-                        conceal_webview(&view.webview, &window)
-                    } else {
-                        stage_webview(&view.webview, &window)
-                    };
+                    // A typed child can only acknowledge readiness after its
+                    // JavaScript bridge has run. WKWebView may suspend a view
+                    // hidden with `set_visible(false)`, so an occlusion that
+                    // races navigation must stay transparent and staged until
+                    // the child sends `workspace.view_ready`.
+                    let staged = hide_webview(&view.webview, &window, false);
                     if let Err(error) = staged {
                         emit_host_error(
                             &shell_webview,
@@ -424,6 +437,19 @@ pub(crate) fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), String>
                         }
                     }
                     view.ready = true;
+                    if view.occluded {
+                        if let Err(error) = hide_webview(&view.webview, &window, true) {
+                            view.ready = false;
+                            emit_lifecycle(
+                                &shell_webview,
+                                &identity,
+                                "error",
+                                Some(&url),
+                                Some(&error),
+                            );
+                            return;
+                        }
+                    }
                     emit_lifecycle(&shell_webview, &identity, "ready", Some(&url), None);
                 }
             }
@@ -522,6 +548,9 @@ fn handle_command(
             policy,
             ..
         } => {
+            trace_workspace_host(&format!(
+                "command=workspace.open resource_id={resource_id} generation={generation}"
+            ));
             if generation < runtime.latest_generation {
                 return Err("stale workspace open was rejected".to_string());
             }
@@ -596,7 +625,7 @@ fn handle_command(
                 return Ok(());
             }
             if occluded {
-                conceal_webview(&view.webview, window)
+                hide_webview(&view.webview, window, true)
             } else {
                 restore_webview(&view.webview, clamped_rect(view.bounds, window))
             }
@@ -821,6 +850,27 @@ fn staging_rect(window: &Window) -> Rect {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HiddenViewPlacement {
+    Staged,
+    Concealed,
+}
+
+fn hidden_view_placement(ready: bool) -> HiddenViewPlacement {
+    if ready {
+        HiddenViewPlacement::Concealed
+    } else {
+        HiddenViewPlacement::Staged
+    }
+}
+
+fn hide_webview(webview: &wry::WebView, window: &Window, ready: bool) -> Result<(), String> {
+    match hidden_view_placement(ready) {
+        HiddenViewPlacement::Staged => stage_webview(webview, window),
+        HiddenViewPlacement::Concealed => conceal_webview(webview, window),
+    }
+}
+
 fn conceal_webview(webview: &wry::WebView, window: &Window) -> Result<(), String> {
     webview
         .set_bounds(staging_rect(window))
@@ -866,6 +916,10 @@ fn emit_lifecycle(
     url: Option<&str>,
     message: Option<&str>,
 ) {
+    trace_workspace_host(&format!(
+        "event=workspace.lifecycle resource_id={} generation={} phase={phase}",
+        identity.resource_id, identity.generation
+    ));
     let event = WorkspaceHostEvent::Lifecycle {
         version: PROTOCOL_VERSION,
         resource_id: &identity.resource_id,
@@ -880,6 +934,7 @@ fn emit_lifecycle(
 }
 
 fn emit_host_error(shell_webview: &wry::WebView, message: &str) {
+    trace_workspace_host(&format!("event=workspace.host_error message={message}"));
     let event = WorkspaceHostEvent::HostError {
         version: PROTOCOL_VERSION,
         message,
@@ -889,17 +944,39 @@ fn emit_host_error(shell_webview: &wry::WebView, message: &str) {
     }
 }
 
+fn trace_workspace_host(message: &str) {
+    if std::env::var_os("A3S_WEBVIEW_WORKSPACE_TRACE").is_some() {
+        eprintln!("a3s-webview: workspace trace: {message}");
+    }
+}
+
 fn dispatch_shell_event(
     shell_webview: &wry::WebView,
     event: &WorkspaceHostEvent<'_>,
 ) -> Result<(), String> {
     let detail = serde_json::to_string(event)
         .map_err(|error| format!("serialize workspace host event: {error}"))?;
-    shell_webview
-        .evaluate_script(&format!(
-            "window.dispatchEvent(new CustomEvent('a3s-workspace-event',{{detail:{detail}}}));"
-        ))
-        .map_err(|error| format!("dispatch workspace host event: {error}"))
+    let script = shell_event_script(&detail);
+    if std::env::var_os("A3S_WEBVIEW_WORKSPACE_TRACE").is_some() {
+        shell_webview
+            .evaluate_script_with_callback(&script, |result| {
+                trace_workspace_host(&format!("shell_evaluation={result}"));
+            })
+            .map_err(|error| format!("dispatch workspace host event: {error}"))
+    } else {
+        shell_webview
+            .evaluate_script(&script)
+            .map_err(|error| format!("dispatch workspace host event: {error}"))
+    }
+}
+
+fn shell_event_script(detail: &str) -> String {
+    format!(
+        "(()=>{{const publish=window.__a3sWorkspaceDispatch;\
+         if(typeof publish==='function')return publish({detail});\
+         window.dispatchEvent(new CustomEvent('a3s-workspace-event',{{detail:{detail}}}));\
+         return -1;}})();"
+    )
 }
 
 fn dispatch_view_message(
@@ -1007,6 +1084,7 @@ fn view_bridge_script(identity: &ResourceIdentity) -> Result<String, String> {
     Ok(format!(
         "Object.defineProperty(window,'a3sWorkspaceView',{{value:Object.freeze({{\
          version:'{PROTOCOL_VERSION}',\
+         capabilities:Object.freeze({{frameScheduling:'best_effort'}}),\
          resourceId:{resource_id},\
          generation:{generation},\
          consumePending:function(){{var q=window.__a3sWorkspaceMessages||[];\
@@ -1029,14 +1107,53 @@ fn view_bridge_script(identity: &ResourceIdentity) -> Result<String, String> {
 }
 
 const SHELL_BRIDGE_SCRIPT: &str = r#"
-Object.defineProperty(window,'a3sWorkspaceHost',{value:Object.freeze({
-  version:'a3s.workspace.v1',
-  native:true,
-  postMessage:function(command){
-    if(!command||typeof command!=='object')throw new TypeError('workspace command must be an object');
-    window.ipc.postMessage(JSON.stringify(command));
-  }
-}),configurable:false,writable:false});
+(()=>{
+  const listeners=new Set();
+  const lifecycle=new Map();
+  const notify=(listener,event)=>{
+    try{listener(event);return true;}
+    catch(error){console.error('workspace lifecycle listener failed',error);return false;}
+  };
+  const publish=(event)=>{
+    if(!event||typeof event!=='object')return {listeners:listeners.size,failures:0};
+    if(event.type==='workspace.lifecycle'){
+      const key=JSON.stringify([event.resourceId,event.generation]);
+      if(event.phase==='closed')lifecycle.delete(key);else lifecycle.set(key,event);
+    }
+    let failures=0;
+    listeners.forEach((listener)=>{if(!notify(listener,event))failures+=1;});
+    window.dispatchEvent(new CustomEvent('a3s-workspace-event',{detail:event}));
+    return {listeners:listeners.size,failures};
+  };
+  Object.defineProperty(window,'__a3sWorkspaceDispatch',{
+    value:publish,configurable:false,writable:false
+  });
+  Object.defineProperty(window,'a3sWorkspaceHost',{value:Object.freeze({
+    version:'a3s.workspace.v1',
+    native:true,
+    capabilities:Object.freeze({
+      lifecycleSubscription:true,
+      rendererIsolation:'native_webview',
+      retainedOcclusion:true,
+      typedMessaging:true
+    }),
+    postMessage:function(command){
+      if(!command||typeof command!=='object')throw new TypeError('workspace command must be an object');
+      window.ipc.postMessage(JSON.stringify(command));
+    },
+    subscribe:function(listener){
+      if(typeof listener!=='function')throw new TypeError('workspace listener must be a function');
+      listeners.add(listener);
+      lifecycle.forEach((event)=>notify(listener,event));
+      let active=true;
+      return function(){
+        if(!active)return;
+        active=false;
+        listeners.delete(listener);
+      };
+    }
+  }),configurable:false,writable:false});
+})();
 "#;
 
 #[cfg(test)]
@@ -1084,8 +1201,26 @@ mod tests {
         assert!(script.contains("workspace.view_message"));
         assert!(script.contains("workspace.view_ready"));
         assert!(script.contains("workspace.view_error"));
+        assert!(script.contains("frameScheduling:'best_effort'"));
         assert!(script.contains("draft-1"));
         assert!(script.contains("generation:7"));
+    }
+
+    #[test]
+    fn shell_bridge_advertises_the_native_renderer_boundary() {
+        assert!(SHELL_BRIDGE_SCRIPT.contains("rendererIsolation:'native_webview'"));
+        assert!(SHELL_BRIDGE_SCRIPT.contains("retainedOcclusion:true"));
+        assert!(SHELL_BRIDGE_SCRIPT.contains("typedMessaging:true"));
+        assert!(SHELL_BRIDGE_SCRIPT.contains("lifecycleSubscription:true"));
+        assert!(SHELL_BRIDGE_SCRIPT.contains("subscribe:function(listener)"));
+        assert!(SHELL_BRIDGE_SCRIPT.contains("__a3sWorkspaceDispatch"));
+        assert!(shell_event_script("{}").contains("__a3sWorkspaceDispatch"));
+    }
+
+    #[test]
+    fn hidden_workspace_waits_for_bridge_readiness_before_native_occlusion() {
+        assert_eq!(hidden_view_placement(false), HiddenViewPlacement::Staged);
+        assert_eq!(hidden_view_placement(true), HiddenViewPlacement::Concealed);
     }
 
     #[test]

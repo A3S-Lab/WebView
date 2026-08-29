@@ -13,6 +13,17 @@ function report(step) {
 
 function apply(message) {
   const payload = message?.payload;
+  if (payload?.type === "smoke.block_renderer") {
+    bridge.postMessage({ type: "smoke.block_started" });
+    window.setTimeout(() => {
+      const deadline = performance.now() + 400;
+      while (performance.now() < deadline) {
+        // Deliberately occupy only this child renderer's JavaScript thread.
+      }
+      bridge.postMessage({ type: "smoke.block_finished" });
+    }, 0);
+    return;
+  }
   if (payload?.type === "smoke.verify_retained") {
     bridge.postMessage({
       type: "smoke.retained",
@@ -35,8 +46,6 @@ if (!bridge || bridge.version !== "a3s.workspace.v1") {
 report("bridge-present");
 retained.value = retainedValue;
 window.addEventListener("a3s-workspace-message", (event) => apply(event.detail));
-window.requestAnimationFrame(() => {
-  report("calling-ready");
-  bridge.ready();
-  for (const message of bridge.consumePending()) apply(message);
-});
+report("calling-ready");
+bridge.ready();
+for (const message of bridge.consumePending()) apply(message);

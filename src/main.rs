@@ -25,11 +25,11 @@
 //! toolbar (`NAV_TOOLBAR_SCRIPT`).
 //!
 //! ## Auth
-//! The A3S OS web app authenticates from `localStorage`, not a cookie — so a
-//! freshly opened WebView would land on the login page. Its `restoreAuth` (see
-//! apps/web `models/auth.model.ts`) requires `auth_token`/`access_token`, an
-//! optional `refresh_token`, AND an `auth_user` object — a token alone is not
-//! enough. Before navigation a wry initialization script seeds the tokens from
+//! Some RemoteUI deployments authenticate from `localStorage`, not a cookie,
+//! so a freshly opened WebView would land on the login page. Their bootstrap
+//! contract requires `auth_token`/`access_token`, an optional `refresh_token`,
+//! AND an `auth_user` object — a token alone is not enough. Before navigation a
+//! wry initialization script seeds the tokens from
 //! the `A3S_OS_TOKEN` / `A3S_OS_REFRESH_TOKEN` env vars the TUI exports (so they
 //! never appear in argv / `ps`), then resolves the current user with a
 //! same-origin `GET /api/v1/users/me` and seeds `auth_user` too. Override the token

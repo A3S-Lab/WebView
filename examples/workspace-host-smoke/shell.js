@@ -12,6 +12,7 @@ let opened = false;
 let remoteOpened = false;
 let overlayTimer = null;
 let restoreTimer = null;
+let isolationProbeStarted = false;
 
 function record(message, pass = true) {
   const item = document.createElement("li");
@@ -44,6 +45,17 @@ function open() {
   if (opened) return;
   opened = true;
   record("host bridge ready");
+  const capabilities = window.a3sWorkspaceHost.capabilities;
+  if (
+    capabilities?.rendererIsolation === "native_webview" &&
+    capabilities?.retainedOcclusion === true &&
+    capabilities?.typedMessaging === true
+  ) {
+    void report("renderer-isolation-declared").catch(() => {});
+  } else {
+    record("native renderer isolation capability missing", false);
+    void report("renderer-shared").catch(() => {});
+  }
   post({
     type: "workspace.open",
     resourceId: localResourceId,
@@ -97,6 +109,15 @@ window.addEventListener("a3s-workspace-event", (event) => {
       detail.phase === "ready" &&
       !overlayTimer
     ) {
+      if (!isolationProbeStarted) {
+        isolationProbeStarted = true;
+        post({
+          type: "workspace.post_message",
+          resourceId: localResourceId,
+          generation: localGeneration,
+          payload: { type: "smoke.block_renderer" },
+        });
+      }
       overlayTimer = window.setTimeout(() => {
         post({
           type: "workspace.occlusion",
@@ -121,6 +142,22 @@ window.addEventListener("a3s-workspace-event", (event) => {
   }
   if (detail?.type === "workspace.view_message") {
     record(`view bridge · ${detail.payload?.type ?? "message"}`);
+    if (detail.payload?.type === "smoke.block_started") {
+      const scheduledAt = performance.now();
+      window.setTimeout(() => {
+        const delay = performance.now() - scheduledAt;
+        const isolated = delay < 180;
+        record(
+          isolated
+            ? `shell stayed responsive during child work · ${Math.round(delay)} ms`
+            : `shell stalled with child work · ${Math.round(delay)} ms`,
+          isolated,
+        );
+        void report(isolated ? "renderer-isolated" : "renderer-shared").catch(
+          () => {},
+        );
+      }, 50);
+    }
     if (detail.payload?.type === "smoke.retained") {
       const step = detail.payload.retained ? "state-retained" : "state-lost";
       void report(step)

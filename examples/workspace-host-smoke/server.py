@@ -22,6 +22,9 @@ ALLOWED_STEPS = {
     "remote-loaded",
     "remote-ready",
     "remote-same-origin-navigation",
+    "renderer-isolated",
+    "renderer-isolation-declared",
+    "renderer-shared",
     "state-lost",
     "state-retained",
 }
