@@ -1,5 +1,7 @@
 # a3s-webview
 
+**Language / 语言:** [English](README.md) · [中文](README.zh-CN.md)
+
 The native window companion for [A3S Code](https://github.com/A3S-Lab/Cli).
 It owns two desktop surfaces that must remain independent of the terminal:
 
