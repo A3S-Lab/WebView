@@ -1,22 +1,22 @@
 # a3s-webview
 
 <p align="center">
-  <strong>Language / 语言:</strong>
+  <strong>语言 / Language:</strong>
   <a href="README.md">English</a> ·
   <a href="README.zh-CN.md">中文</a>
 </p>
 
-[A3S 代码](https://github.com/A3S-Lab/Cli) 的本机窗口伴侣。
+[A3S Code](https://github.com/A3S-Lab/Cli) 的本机窗口伴侣。
 它拥有两个必须保持独立于终端的桌面表面：
 
 - 调整 RemoteUI 和受信任的本地报告 WebView 窗口的大小；和
-- 位于物理屏幕顶部的透明、始终位于顶部的特工岛
+- 位于物理屏幕顶部的透明、始终位于顶部的 Agent Island
   中心。
 
 它还为需要多个应用程序的应用程序提供了本机工作区主机
 一个窗口内隔离的 WebView。主机将应用程序外壳保存在
 一个 WebView 并将生成感知的本地或远程资源 WebView 放置在
-该外壳提供的键入矩形。这避免了 iframe 嵌入限制
+该外壳提供的类型化矩形。这避免了 iframe 嵌入限制
 不允许未经验证的导航或过时的资源事件。
 
 普通链接仍会在用户的浏览器中打开。无法启动任一本机
@@ -59,7 +59,7 @@ a3s-webview --workspace-host --url <http(s)://…|file://…>
   每个用户的私有目录。共享咨询锁只允许一个岛屿进入
   即使多个 TUI 发布者请求，也可以为当前用户进行处理。一个
   没有确切的非空闲 A3S 生命周期或已识别的新鲜快照
-  编码代理进程关闭助手；新流程行触发并保持
+  编码 Agent进程关闭助手；新流程行触发并保持
   岛屿还活着。
 - `--workspace-host` — 加载应用程序 shell 并公开版本控制
   `a3s.workspace.v1` JavaScript 桥。 shell 可以打开本地应用程序，
@@ -82,10 +82,10 @@ shell 在脚本运行之前接收`window.a3sWorkspaceHost`。它发送
 它们的交互状态已安装，`fail(message)` 对于有界可恢复
 错误，以及 `postMessage(payload)` 模式拥有的应用程序消息。
 
-当键入以下内容时，主机不会将网络负载视为应用程序就绪状态：
+当类型化以下内容时，主机不会将网络负载视为应用程序就绪状态：
 桥已启用。它等待应用程序握手并报告错误
 30秒后。主机到视图的消息保存在有界本机 FIFO 中，直到
-键入的应用程序报告已准备就绪，然后按顺序交付。这可以防止
+类型化的应用程序报告已准备就绪，然后按顺序交付。这可以防止
 初始修订版本在捆绑包启动或导航期间丢失，无需
 创建无限的内存接收器。
 
@@ -117,7 +117,7 @@ shell 可以发出 `workspace.occlusion`，而受信任的兄弟覆盖层是
 在该原点内导航，但导航回 shell 原点是
 在任何请求到达 shell 服务器之前被拒绝。
 
-## 特工岛用户界面
+## Agent Island 用户界面
 
 该岛是由这个独立的Tao/Wry 助手实现的。它离线嵌入
 平台WebView中的HTML、CSS和JavaScript；它不渲染通过
@@ -135,7 +135,7 @@ shell 可以发出 `workspace.occlusion`，而受信任的兄弟覆盖层是
 当需要关注多行时，可以发出批准或输入请求
 在保留故障之前，解锁工作将成为主要紧凑行。
 自动注意力扩展不会窃取键盘焦点；扩展的
-窗口变得可聚焦，以便用户可以操作控件并键入回复
+窗口变得可聚焦，以便用户可以操作控件并类型化回复
 直接在岛上。
 
 在 macOS 上，帮助程序将 `NSScreen.safeAreaInsets` 与两个一起读取
@@ -152,7 +152,7 @@ shell 可以发出 `workspace.occlusion`，而受信任的兄弟覆盖层是
 岛屿，缺口融合样式被删除，展开/折叠保持移动
 表面的顶部中心，而不是将其捕捉回显示器边缘。
 
-用户首选项默认为启用并由 A3S 代码保留。
+用户首选项默认为启用并由 A3S Code保留。
 `/island on|off|status` 通过 TUI 进行控制。扩展视图还提供
 `Turn off`，在助手之前写入相同的私有选择退出标记
 退出； `/island on` 恢复表面。
@@ -181,7 +181,7 @@ shell 可以发出 `workspace.occlusion`，而受信任的兄弟覆盖层是
 稍后的新请求也会这样做。手动过滤器选择保持稳定，直到出现新的过滤器
 注意身份到来。
 
-任何精确的 `planning` / `working` 行或公认的编码代理进程都可以
+任何精确的 `planning` / `working` 行或公认的编码 Agent进程都可以
 动画的多层多色霓虹灯边框。减少运动模式保持
 静态颜色边框，背景 WebView 接收低频直接
 重新绘制，以便 WebKit 计时器节流不会冻结呼吸效果。
@@ -210,7 +210,7 @@ shell 可以发出 `workspace.occlusion`，而受信任的兄弟覆盖层是
 使用现有的之前的当前会话、活动和工具/任务上下文
 提交、批准、中断或子取消路径。
 
-## 授权
+## 认证
 
 A3S OS Web 应用程序通过 `localStorage` (`access_token` /
 `auth_token`)，而不是 cookie — 因此新打开的 WebView 将登陆登录
@@ -226,7 +226,7 @@ A3S OS Web 应用程序通过 `localStorage` (`access_token` /
 | Linux | WebKitGTK |需要`libwebkit2gtk-4.1`； X11 支持顶部中心/保持上方提示。标准 Wayland 可能会忽略全局布局。 |
 |窗户 |网页视图2 |运行时随受支持的 Windows 版本一起提供；该岛位于任务栏和 Alt-Tab 列表之外，在折叠时保持非激活状态，并在展开以进行直接交互时接受焦点。 |
 
-发布工作流程构建所有 CLI 目标。在没有安装助手的地方，
+发布工作流构建所有 CLI 目标。在没有安装助手的地方，
 RemoteUI 降级为系统浏览器，并且跳过 Agent Island 启动。
 每个拉取请求都在 Linux 上本地运行严格的 Clippy 和完整的测试套件，
 macOS 和 Windows； Linux 还验证格式、rustdoc 和包内容。
